@@ -121,6 +121,7 @@ async function entrar() {
   eu = await api("GET", "/eu");
   desenharEu();
   mostrar("cafe");
+  atualizarEstadoNotif().catch(() => {});
 }
 
 function textoStock(s) {
@@ -395,3 +396,156 @@ window.addEventListener("appinstalled", () => {
 if (!isStandalone() && isIOS() && isSafari() && !readLocal(IOS_HINT_DISMISSED_KEY)) {
   showInstallBanner("Para instalar: toca em Partilhar e depois em «Adicionar ao ecrã principal».", false);
 }
+
+// ---------- notificações push ----------
+
+let chaveVapid = null;
+let subscricaoAtual = null;
+
+// Base64 URL-safe -> Uint8Array, formato exigido por pushManager.subscribe().
+function urlBase64ParaUint8Array(base64) {
+  const preenchimento = "=".repeat((4 - (base64.length % 4)) % 4);
+  const normal = (base64 + preenchimento).replace(/-/g, "+").replace(/_/g, "/");
+  const bruto = atob(normal);
+  const bytes = new Uint8Array(bruto.length);
+  for (let i = 0; i < bruto.length; i++) bytes[i] = bruto.charCodeAt(i);
+  return bytes;
+}
+
+function notifSuportado() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function esconderTudoNotif() {
+  $("btn-notif-ativar").hidden = true;
+  $("notif-ios-aviso").hidden = true;
+  $("form-notif-prefs").hidden = true;
+  $("btn-notif-cancelar").hidden = true;
+}
+
+async function carregarPreferenciasNotif() {
+  try {
+    const prefs = await api("GET", "/notificacoes/preferencias");
+    for (const chk of $("form-notif-prefs").querySelectorAll("input[data-evento]")) {
+      chk.checked = prefs[chk.dataset.evento] !== false;
+    }
+  } catch { /* falha a ler: mantém os interruptores no estado por omissão (tudo ligado) */ }
+}
+
+// Chamado depois de entrar, e outra vez depois de qualquer ação de notificações,
+// para o ecrã refletir sempre o estado real do dispositivo.
+async function atualizarEstadoNotif() {
+  const estado = $("notif-estado");
+
+  if (!notifSuportado()) {
+    estado.textContent = "Este dispositivo não suporta notificações.";
+    esconderTudoNotif();
+    return;
+  }
+
+  if (isIOS() && !isStandalone()) {
+    estado.textContent = "";
+    esconderTudoNotif();
+    $("notif-ios-aviso").hidden = false;
+    return;
+  }
+
+  let resp;
+  try {
+    resp = await fetch("/api/push/chave");
+  } catch {
+    estado.textContent = "Não foi possível verificar as notificações.";
+    esconderTudoNotif();
+    return;
+  }
+  if (resp.status === 503) {
+    estado.textContent = "As notificações não estão configuradas neste servidor.";
+    esconderTudoNotif();
+    return;
+  }
+  if (!resp.ok) {
+    estado.textContent = "Não foi possível verificar as notificações.";
+    esconderTudoNotif();
+    return;
+  }
+  const dados = await resp.json().catch(() => ({}));
+  chaveVapid = dados.chave;
+
+  const registration = await navigator.serviceWorker.ready;
+  subscricaoAtual = await registration.pushManager.getSubscription();
+
+  if (Notification.permission === "denied") {
+    estado.textContent = "As notificações foram bloqueadas nas definições do browser.";
+    esconderTudoNotif();
+    if (subscricaoAtual) {
+      $("btn-notif-cancelar").hidden = false;
+      $("form-notif-prefs").hidden = false;
+      await carregarPreferenciasNotif();
+    }
+    return;
+  }
+
+  if (subscricaoAtual) {
+    estado.textContent = "Notificações ligadas neste dispositivo.";
+    esconderTudoNotif();
+    $("btn-notif-cancelar").hidden = false;
+    $("form-notif-prefs").hidden = false;
+    await carregarPreferenciasNotif();
+  } else {
+    estado.textContent = "Notificações desligadas neste dispositivo.";
+    esconderTudoNotif();
+    $("btn-notif-ativar").hidden = false;
+  }
+}
+
+// Só pedimos permissão a partir daqui, num clique explícito: nunca ao carregar
+// a página (falha sempre em iOS e, em Android, gasta o pedido sem contexto).
+$("btn-notif-ativar").onclick = async () => {
+  try {
+    const permissao = await Notification.requestPermission();
+    if (permissao !== "granted") {
+      toast("Permissão de notificações recusada.", true);
+      return;
+    }
+    if (!chaveVapid) throw new Error("sem chave");
+    const registration = await navigator.serviceWorker.ready;
+    const subscricao = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ParaUint8Array(chaveVapid),
+    });
+    const chaves = subscricao.toJSON().keys;
+    await api("POST", "/push/subscricoes", {
+      endpoint: subscricao.endpoint,
+      p256dh: chaves.p256dh,
+      auth: chaves.auth,
+      dispositivo: navigator.userAgent.slice(0, 120),
+    });
+    toast("Notificações ligadas.");
+  } catch {
+    toast("Não foi possível ligar as notificações.", true);
+  } finally {
+    await atualizarEstadoNotif();
+  }
+};
+
+$("btn-notif-cancelar").onclick = async () => {
+  try {
+    if (subscricaoAtual) {
+      await api("DELETE", "/push/subscricoes", { endpoint: subscricaoAtual.endpoint }).catch(() => {});
+      await subscricaoAtual.unsubscribe();
+    }
+    toast("Subscrição cancelada neste dispositivo.");
+  } catch {
+    toast("Não foi possível cancelar a subscrição.", true);
+  } finally {
+    await atualizarEstadoNotif();
+  }
+};
+
+$("form-notif-prefs").addEventListener("change", async (ev) => {
+  if (!ev.target.closest("input[data-evento]")) return;
+  const prefs = {};
+  for (const chk of $("form-notif-prefs").querySelectorAll("input[data-evento]")) prefs[chk.dataset.evento] = chk.checked;
+  try { await api("PUT", "/notificacoes/preferencias", prefs); }
+  catch (e) { toast(e.message, true); }
+});

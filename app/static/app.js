@@ -477,7 +477,7 @@ async function atualizarEstadoNotif() {
     return;
   }
   const dados = await resp.json().catch(() => ({}));
-  chaveVapid = dados.chave;
+  chaveVapid = dados.chave_publica;
 
   const registration = await navigator.serviceWorker.ready;
   subscricaoAtual = await registration.pushManager.getSubscription();

@@ -1,14 +1,18 @@
 """API do café do escritório. Uma app FastAPI que também serve o front-end estático."""
 import hashlib
+import json
+import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from py_vapid import Vapid
 from pydantic import BaseModel, Field
+from pywebpush import WebPushException, webpush
 
 from . import db, logic
 
@@ -17,6 +21,8 @@ BLOQUEIO = timedelta(seconds=60)
 COOKIE = "cafe_sessao"
 SESSAO_DIAS = 180
 STATIC = Path(__file__).parent / "static"
+
+EVENTOS = ("cafe", "compra", "pagamento", "stock_baixo", "registo")
 
 
 
@@ -189,6 +195,104 @@ def _pagamento(c, mes: str, pagador_id: int) -> dict | None:
         (mes, pagador_id),
     ).fetchone()
     return dict(row) if row else None
+
+
+def _euros(cent: int) -> str:
+    return f"{cent / 100:.2f}".replace(".", ",")
+
+
+# ---------- notificações push ----------
+#
+# As chaves VAPID vêm de variáveis de ambiente (nunca de código ou ficheiro):
+# CAFE_VAPID_PRIVATE é o escalar privado de 32 bytes em base64url sem padding
+# (43 caracteres, tudo numa linha, sem cabeçalhos PEM). CAFE_VAPID_PUBLIC é o
+# ponto público X9.62 descomprimido (65 bytes) na mesma codificação
+# (87 caracteres) — é exactamente o valor devolvido por GET /api/push/chave e
+# o que o browser usa como applicationServerKey. Sem as três variáveis
+# (incluindo o contacto), a app arranca e funciona na mesma, sem push.
+
+def _vapid_configurado() -> bool:
+    return bool(
+        os.environ.get("CAFE_VAPID_PRIVATE")
+        and os.environ.get("CAFE_VAPID_PUBLIC")
+        and os.environ.get("CAFE_VAPID_CONTACTO")
+    )
+
+
+def _vapid_instance() -> Vapid:
+    """Reconstrói a chave EC a partir do escalar cru em base64url, em vez de
+    depender de um formato PEM (que a variável de ambiente não usa)."""
+    return Vapid.from_raw(os.environ["CAFE_VAPID_PRIVATE"].encode("ascii"))
+
+
+def _preferencias_desligadas(c, utilizador_id: int) -> set[str]:
+    rows = c.execute(
+        "SELECT evento FROM notificacoes_desligadas WHERE utilizador_id = ?", (utilizador_id,)
+    ).fetchall()
+    return {r["evento"] for r in rows}
+
+
+def _destinatarios_subscricoes(c, evento: str, autor_id: int) -> list[dict]:
+    """Subscrições de quem deve receber esta notificação: nunca o autor do
+    acto, nunca quem desligou este evento."""
+    rows = c.execute(
+        """
+        SELECT s.endpoint, s.p256dh, s.auth
+        FROM subscricoes s
+        WHERE s.utilizador_id != ?
+          AND NOT EXISTS (
+              SELECT 1 FROM notificacoes_desligadas d
+              WHERE d.utilizador_id = s.utilizador_id AND d.evento = ?
+          )
+        """,
+        (autor_id, evento),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _enviar_notificacao(evento: str, mensagem: str, autor_id: int) -> None:
+    """Corre em BackgroundTasks: nunca no caminho do pedido. Um push service
+    lento não pode atrasar a resposta à acção que o despoletou."""
+    if not _vapid_configurado():
+        return
+    with db.conn() as c:
+        destinatarios = _destinatarios_subscricoes(c, evento, autor_id)
+    if not destinatarios:
+        return
+    vv = _vapid_instance()
+    payload = json.dumps({"evento": evento, "mensagem": mensagem})
+    claims_base = {"sub": os.environ["CAFE_VAPID_CONTACTO"]}
+    for sub in destinatarios:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                },
+                data=payload,
+                vapid_private_key=vv,
+                vapid_claims=dict(claims_base),
+            )
+        except WebPushException as exc:
+            if exc.status_code in (404, 410):
+                with db.conn() as c:
+                    c.execute("DELETE FROM subscricoes WHERE endpoint = ?", (sub["endpoint"],))
+
+
+def _avisar(background_tasks: BackgroundTasks, evento: str, mensagem: str, autor_id: int) -> None:
+    background_tasks.add_task(_enviar_notificacao, evento, mensagem, autor_id)
+
+
+def _dispara_stock_baixo(c, background_tasks: BackgroundTasks, autor_id: int, stock_antes: int) -> None:
+    """Dispara só na transição para abaixo do limiar, ou ao chegar a zero —
+    nunca a cada acção enquanto o stock já está baixo, senão repete-se até
+    alguém repor."""
+    limiar = int(db.get_config(c, "stock_baixo"))
+    stock_depois = _stock(c)
+    cruzou_o_limiar = stock_antes > limiar >= stock_depois
+    chegou_a_zero = stock_antes > 0 and stock_depois == 0
+    if cruzou_o_limiar or chegou_a_zero:
+        _avisar(background_tasks, "stock_baixo", f"Restam {stock_depois} cápsulas", autor_id)
 
 
 # ---------- a minha página ----------

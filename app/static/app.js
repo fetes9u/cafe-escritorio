@@ -33,15 +33,181 @@ function toast(msg, erro = false) {
 }
 
 async function api(metodo, rota, corpo) {
-  const r = await fetch("/api" + rota, {
-    method: metodo,
-    headers: corpo ? { "Content-Type": "application/json" } : {},
-    body: corpo ? JSON.stringify(corpo) : undefined,
-  });
+  let r;
+  try {
+    r = await fetch("/api" + rota, {
+      method: metodo,
+      headers: corpo ? { "Content-Type": "application/json" } : {},
+      body: corpo ? JSON.stringify(corpo) : undefined,
+    });
+  } catch {
+    // fetch() itself threw: no network, not an HTTP error. Callers that care
+    // about the offline case check `erro.rede` instead of parsing messages.
+    const erro = new Error("Sem ligação.");
+    erro.rede = true;
+    throw erro;
+  }
   if (r.status === 401 && rota !== "/login") { carregarNomes().catch(() => {}); mostrar("entrada"); throw new Error("Sessão expirada. Entra outra vez."); }
   const dados = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(dados.detail || `Erro ${r.status}`);
   return dados;
+}
+
+// ---------- offline (IndexedDB) ----------
+
+const DB_NOME = "cafe-offline";
+const DB_VERSAO = 1;
+let dbPromise = null;
+
+function abrirDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const pedido = indexedDB.open(DB_NOME, DB_VERSAO);
+    pedido.onupgradeneeded = () => {
+      const db = pedido.result;
+      if (!db.objectStoreNames.contains("fila")) db.createObjectStore("fila", { keyPath: "cliente_id" });
+      if (!db.objectStoreNames.contains("instantaneos")) db.createObjectStore("instantaneos", { keyPath: "chave" });
+    };
+    pedido.onsuccess = () => resolve(pedido.result);
+    pedido.onerror = () => reject(pedido.error);
+  });
+  return dbPromise;
+}
+
+// Wraps an IDBRequest in a promise; every idb* helper below builds on this.
+function idbPedido(pedido) {
+  return new Promise((resolve, reject) => {
+    pedido.onsuccess = () => resolve(pedido.result);
+    pedido.onerror = () => reject(pedido.error);
+  });
+}
+
+async function idbPut(loja, valor) {
+  const db = await abrirDB();
+  return idbPedido(db.transaction(loja, "readwrite").objectStore(loja).put(valor));
+}
+async function idbApagar(loja, chave) {
+  const db = await abrirDB();
+  return idbPedido(db.transaction(loja, "readwrite").objectStore(loja).delete(chave));
+}
+async function idbTodos(loja) {
+  const db = await abrirDB();
+  return idbPedido(db.transaction(loja, "readonly").objectStore(loja).getAll());
+}
+async function idbUm(loja, chave) {
+  const db = await abrirDB();
+  return idbPedido(db.transaction(loja, "readonly").objectStore(loja).get(chave));
+}
+
+// Wipes the whole offline database. Called on logout: /api/escritorio holds
+// everyone's data, so per-user keying only stays safe on a shared device if
+// nothing survives past the session that fetched it.
+async function apagarDB() {
+  dbPromise = null;
+  await new Promise((resolve) => {
+    const pedido = indexedDB.deleteDatabase(DB_NOME);
+    pedido.onsuccess = () => resolve();
+    pedido.onerror = () => resolve();
+    pedido.onblocked = () => resolve();
+  });
+}
+
+// Stores the JSON response of an authenticated GET exactly as it arrived,
+// keyed by user so a shared device never mixes two people's snapshots.
+async function guardarInstantaneo(tipo, utilizadorId, dados) {
+  try {
+    await idbPut("instantaneos", {
+      chave: `${tipo}:${utilizadorId}`,
+      utilizador_id: utilizadorId,
+      dados,
+      em: new Date().toISOString(),
+    });
+  } catch (erro) {
+    console.error("Falha ao guardar fotografia offline:", erro);
+  }
+}
+
+function horaCurta(iso) {
+  return new Date(iso).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+}
+
+// Reflects how many queued coffees are waiting to sync, shown right under
+// the coffee button so offline state is never a blank screen.
+async function atualizarAvisoFila() {
+  const el = $("fila-aviso");
+  if (!el) return;
+  let n = 0;
+  try { n = (await idbTodos("fila")).length; } catch { n = 0; }
+  if (n > 0) {
+    el.textContent = `${plural(n, "café", "cafés")} por sincronizar`;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+
+// The last-coffee undo is only safe while the coffee is still in the local
+// queue (see spec section 7): with an empty queue and no network there is
+// nothing local to remove, and replaying DELETE /api/cafe/ultimo later could
+// remove a different coffee than the one the person saw.
+async function atualizarEstadoDesfazer() {
+  const btn = $("btn-desfazer");
+  const razao = $("desfazer-razao");
+  if (!btn) return;
+  let n = 0;
+  try { n = (await idbTodos("fila")).length; } catch { n = 0; }
+  if (n === 0 && !navigator.onLine) {
+    btn.disabled = true;
+    if (razao) { razao.textContent = "Sem café por sincronizar e sem ligação: não é possível desfazer agora."; razao.hidden = false; }
+  } else {
+    btn.disabled = false;
+    if (razao) razao.hidden = true;
+  }
+}
+
+const UTILIZADOR_ATUAL_KEY = "cafe-utilizador-atual";
+
+let sincronizando = false;
+
+// Flushes the local queue to the server, one entry at a time. A queue entry
+// is only deleted after a 2xx response: anything else (a real network
+// failure especially) leaves it queued so a half-failed flush never drops a
+// coffee. The server snapshot is only re-fetched once, after the whole
+// queue has drained, so the optimistic count never shows +1 twice.
+async function sincronizarFila() {
+  if (sincronizando || !eu) return;
+  sincronizando = true;
+  try {
+    let entradas;
+    try { entradas = await idbTodos("fila"); }
+    catch (erro) { console.error("Falha ao ler a fila offline:", erro); return; }
+
+    for (const entrada of entradas) {
+      try {
+        await api("POST", "/cafe", { cliente_id: entrada.cliente_id, em: entrada.em });
+        await idbApagar("fila", entrada.cliente_id);
+      } catch (erro) {
+        if (erro && erro.rede) break; // sem rede: as restantes falham na mesma, tenta-se noutro evento
+        console.error("Falha ao sincronizar café da fila:", erro);
+      }
+    }
+
+    const restantes = await idbTodos("fila").catch(() => entradas);
+    await atualizarAvisoFila();
+    await atualizarEstadoDesfazer();
+
+    if (!restantes.length) {
+      try {
+        eu = await api("GET", "/eu");
+        await guardarInstantaneo("eu", eu.utilizador.id, eu);
+        desenharEu();
+      } catch (erro) {
+        console.error("Falha ao actualizar depois de sincronizar a fila:", erro);
+      }
+    }
+  } finally {
+    sincronizando = false;
+  }
 }
 
 function mostrar(vista) {
@@ -118,10 +284,26 @@ $("form-registo").onsubmit = async (e) => {
 // ---------- café ----------
 
 async function entrar() {
-  eu = await api("GET", "/eu");
+  try {
+    eu = await api("GET", "/eu");
+    writeLocal(UTILIZADOR_ATUAL_KEY, String(eu.utilizador.id));
+    await guardarInstantaneo("eu", eu.utilizador.id, eu);
+    $("fotografia-aviso").hidden = true;
+  } catch (erro) {
+    if (!erro || !erro.rede) throw erro; // not an offline case: let the caller send us to the login screen
+    const idGuardado = readLocal(UTILIZADOR_ATUAL_KEY);
+    const foto = idGuardado ? await idbUm("instantaneos", `eu:${idGuardado}`).catch(() => null) : null;
+    if (!foto) throw erro; // no cached state for anyone: nothing to show offline
+    eu = foto.dados;
+    $("fotografia-aviso").textContent = `Sem ligação. A mostrar o último estado conhecido (${horaCurta(foto.em)}).`;
+    $("fotografia-aviso").hidden = false;
+  }
   desenharEu();
   mostrar("cafe");
+  await atualizarAvisoFila();
+  await atualizarEstadoDesfazer();
   atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));
+  sincronizarFila().catch((erro) => console.error("Falha ao sincronizar a fila offline:", erro));
 }
 
 function textoStock(s) {
@@ -153,25 +335,64 @@ function desenharEu() {
 $("btn-cafe").onclick = async () => {
   const b = $("btn-cafe");
   b.disabled = true;
+  const clienteId = crypto.randomUUID();
+  const em = new Date().toISOString();
+  try { await idbPut("fila", { cliente_id: clienteId, tipo: "cafe", em, criado_em: em }); }
+  catch (erro) { console.error("Falha ao guardar café na fila offline:", erro); }
+
   eu.cafes += 1; eu.valor_cent += eu.preco_cent; eu.stock.stock -= 1;   // optimista
   desenharEu();
+  await atualizarAvisoFila();
+  await atualizarEstadoDesfazer();
+
   try {
-    await api("POST", "/cafe");
+    await api("POST", "/cafe", { cliente_id: clienteId, em });
+    await idbApagar("fila", clienteId);
     toast("Café marcado ☕");
-    eu = await api("GET", "/eu");
-  } catch (e) {
-    toast(e.message, true);
-    eu = await api("GET", "/eu").catch(() => eu);
+    await sincronizarFila(); // flushes anything still queued, then refreshes /api/eu once
+  } catch (erro) {
+    if (erro && erro.rede) toast("Sem ligação. O café fica em fila e sincroniza sozinho.", true);
+    else toast(erro.message, true);
   } finally {
+    await atualizarAvisoFila();
+    await atualizarEstadoDesfazer();
     desenharEu();
     b.disabled = false;
   }
 };
 
 $("btn-desfazer").onclick = async () => {
+  let fila;
+  try { fila = await idbTodos("fila"); } catch { fila = []; }
+
+  if (fila.length) {
+    // Offline undo: drop the queued coffee locally. It never reached the
+    // server, so there is nothing there to delete.
+    const ultimo = fila.reduce((a, b) => (a.criado_em > b.criado_em ? a : b));
+    try { await idbApagar("fila", ultimo.cliente_id); }
+    catch (erro) { toast("Não foi possível desfazer: " + erro.message, true); return; }
+    eu.cafes -= 1; eu.valor_cent -= eu.preco_cent; eu.stock.stock += 1;
+    desenharEu();
+    await atualizarAvisoFila();
+    await atualizarEstadoDesfazer();
+    toast("Café retirado da fila.");
+    return;
+  }
+
+  if (!navigator.onLine) {
+    await atualizarEstadoDesfazer();
+    toast("Sem café por sincronizar e sem ligação: não é possível desfazer.", true);
+    return;
+  }
+
   if (!confirm("Apagar o teu último café?")) return;
-  try { await api("DELETE", "/cafe/ultimo"); toast("Café apagado."); eu = await api("GET", "/eu"); desenharEu(); }
-  catch (e) { toast(e.message, true); }
+  try {
+    await api("DELETE", "/cafe/ultimo");
+    toast("Café apagado.");
+    eu = await api("GET", "/eu");
+    await guardarInstantaneo("eu", eu.utilizador.id, eu);
+    desenharEu();
+  } catch (e) { toast(e.message, true); }
 };
 
 $("btn-prev").onclick = async () => {
@@ -195,6 +416,9 @@ $("btn-pin").onclick = async () => {
 $("btn-sair").onclick = async () => {
   await api("POST", "/logout").catch(() => {});
   eu = null;
+  escritorio = null;
+  removeLocal(UTILIZADOR_ATUAL_KEY);
+  await apagarDB(); // /api/escritorio holds everyone's data: nothing offline survives a shared device's logout
   await carregarNomes();
   mostrar("entrada");
 };
@@ -202,11 +426,24 @@ $("btn-sair").onclick = async () => {
 // ---------- escritório ----------
 
 async function carregarEscritorio(mes) {
-  escritorio = await api("GET", "/escritorio" + (mes ? `?mes=${mes}` : ""));
-  if (!mes && escritorio.meses.length > 1) {
-    // Sem mês escolhido: se o mês anterior ainda tem pagamentos por fazer, abre nele.
-    const anterior = await api("GET", `/escritorio?mes=${escritorio.meses[1]}`);
-    if (anterior.pessoas.some((p) => p.cafes > 0 && !p.pago)) escritorio = anterior;
+  try {
+    escritorio = await api("GET", "/escritorio" + (mes ? `?mes=${mes}` : ""));
+    if (!mes && escritorio.meses.length > 1) {
+      // Sem mês escolhido: se o mês anterior ainda tem pagamentos por fazer, abre nele.
+      const anterior = await api("GET", `/escritorio?mes=${escritorio.meses[1]}`);
+      if (anterior.pessoas.some((p) => p.cafes > 0 && !p.pago)) escritorio = anterior;
+    }
+    const idAtual = eu ? eu.utilizador.id : readLocal(UTILIZADOR_ATUAL_KEY);
+    if (idAtual) await guardarInstantaneo("escritorio", idAtual, escritorio);
+    $("esc-fotografia-aviso").hidden = true;
+  } catch (erro) {
+    if (!erro || !erro.rede) throw erro;
+    const idAtual = eu ? eu.utilizador.id : readLocal(UTILIZADOR_ATUAL_KEY);
+    const foto = idAtual ? await idbUm("instantaneos", `escritorio:${idAtual}`).catch(() => null) : null;
+    if (!foto) throw erro;
+    escritorio = foto.dados;
+    $("esc-fotografia-aviso").textContent = `Sem ligação. A mostrar o último estado conhecido (${horaCurta(foto.em)}).`;
+    $("esc-fotografia-aviso").hidden = false;
   }
   desenharEscritorio();
 }
@@ -327,6 +564,22 @@ $("abas").onclick = async (ev) => {
   catch { await carregarNomes(); mostrar("entrada"); }
 })();
 
+// The fila flushes on the 'online' event and whenever the app becomes
+// visible again (eg. switching back to a backgrounded tab), on top of the
+// flush already triggered right after login inside entrar().
+window.addEventListener("online", () => {
+  sincronizarFila().catch((erro) => console.error("Falha ao sincronizar a fila offline:", erro));
+  atualizarEstadoDesfazer();
+});
+window.addEventListener("offline", () => {
+  atualizarEstadoDesfazer();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  sincronizarFila().catch((erro) => console.error("Falha ao sincronizar a fila offline:", erro));
+  atualizarEstadoDesfazer();
+});
+
 // ---------- service worker (app shell offline) ----------
 
 if ("serviceWorker" in navigator) {
@@ -344,6 +597,9 @@ function readLocal(key) {
 }
 function writeLocal(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode or blocked storage: no memory, no harm */ }
+}
+function removeLocal(key) {
+  try { localStorage.removeItem(key); } catch { /* private mode or blocked storage: no memory, no harm */ }
 }
 
 function isIOS() {

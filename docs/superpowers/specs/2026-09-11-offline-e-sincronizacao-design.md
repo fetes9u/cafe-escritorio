@@ -15,7 +15,7 @@ hora a que foi bebido, e tem de aparecer uma vez só.
 
 | Decisão | Escolha | Porquê |
 |---|---|---|
-| Âmbito de escrita offline | Só o café e o desfazer | Repor stock e pagar são acções feitas sentado, com rede. O café é o único que se faz de pé à máquina. |
+| Âmbito de escrita offline | Só o café, e o desfazer **apenas enquanto o café ainda está na fila** | Repor stock e pagar são acções feitas sentado, com rede. O café é o único que se faz de pé à máquina. O desfazer de um café já sincronizado precisa de rede, ver secção 7. |
 | Estado offline | Fotografia do último estado, por utilizador | Um botão que aceita o toque num ecrã vazio é meia funcionalidade. |
 | Background Sync API | **Rejeitada** | Não existe no iOS. O caminho pelo evento `online` e pela reabertura tem de existir na mesma, e a Background Sync seria um segundo caminho exercitado só em metade dos telemóveis. |
 | Notificação de café sincronizado tarde | Não notifica se chegou com mais de 15 minutos de atraso | É notícia velha. O `stock_baixo` notifica sempre, porque descreve o estado actual e não um acontecimento passado. |
@@ -54,6 +54,12 @@ O cliente envia o instante real. Sem isso, cinco cafés da manhã aparecem todos
 O servidor não aceita às cegas, porque a data decide o mês e o mês decide quem
 paga o quê:
 
+0. **O `em` tem de vir com fuso horário.** `logic.mes_de()` já faz a conversão
+   para `Europe/Lisbon` antes de recortar o `YYYY-MM`, portanto o mês fica certo
+   desde que o instante seja *timezone-aware*. Um `em` sem fuso, ou que não
+   parseie, é tratado como ausente e usa-se `agora`. Nunca chamar `mes_de()` com
+   um `datetime` ingénuo: `astimezone()` sobre um ingénuo assume o fuso da
+   máquina e um café às 00:30 de dia 1 vai parar ao mês anterior.
 1. Aceita `em` se estiver entre `agora - 7 dias` e `agora + 5 min`. Fora disso,
    usa `agora`.
 2. **Se o mês resultante já tiver pagamento dessa pessoa, usa `agora`.**
@@ -84,15 +90,25 @@ funcionar sem corpo nenhum):
 
 - `cliente_id`: string UUID. Se já existir um café com este `cliente_id`, **não
   insere, não notifica** e responde `200`.
-- `em`: instante UTC ISO-8601. Regras da secção 4.
-- Café novo responde `201`. As duas respostas têm o mesmo corpo:
+- `em`: instante ISO-8601 **com fuso** (o cliente envia UTC, sufixo `Z`).
+  Regras da secção 4.
+
+Café novo, `201`:
 
 ```json
-{"ok": true, "cliente_id": "<o mesmo>", "em": "<o instante aceite pelo servidor>", "duplicado": false}
+{"ok": true, "cliente_id": "<o mesmo>", "em": "<instante aceite pelo servidor>", "duplicado": false}
 ```
 
-O cliente trata `200` e `201` como sucesso e usa o `em` devolvido, que pode
-diferir do enviado, para actualizar a fotografia local.
+Duplicado, `200`, mesmos campos com `duplicado` a `true`:
+
+```json
+{"ok": true, "cliente_id": "<o mesmo>", "em": "<instante do café que já existia>", "duplicado": true}
+```
+
+O cliente trata as duas como sucesso e usa o `em` devolvido, que pode diferir do
+enviado. **O sinal utilizável é o campo `duplicado`, não o código HTTP:** o
+helper `api()` em `app.js` só olha para `r.ok` e devolve o corpo, portanto a
+distinção 200/201 não chega ao chamador.
 
 ### 5.2 IndexedDB no cliente
 
@@ -125,6 +141,11 @@ a limpeza no logout não são detalhe, são a condição para isto ser aceitáve
   "1 café por sincronizar".
 - O desfazer offline **remove o café da fila**, não enfileira um pedido de
   apagar. Um café que nunca chegou ao servidor não precisa de ser apagado lá.
+- **Com a fila vazia e sem rede, o desfazer fica desactivado**, com a razão
+  escrita no ecrã. Não se enfileira o `DELETE /api/cafe/ultimo`: "o último café"
+  não é um referente estável através de uma sincronização, logo um apagar
+  reenviado pode remover um café diferente daquele que a pessoa viu. Tornar isso
+  seguro obrigava a endereçar o café por id, e não é o que esta mudança faz.
 - O resto do ecrã mostra a fotografia, com uma marca clara de que é o último
   estado conhecido e não o estado de agora.
 - A fila esvazia-se no evento `online`, quando a app volta a ficar visível
@@ -139,9 +160,15 @@ Além dos testes de cada lado:
   já usado em `tests/test_contrato_api.py`.
 - **Idempotência:** o mesmo `cliente_id` enviado duas vezes dá um café, a segunda
   resposta é `200` e **não** dispara notificação.
-- **Migração:** abrir uma base de dados criada com o esquema antigo, correr
-  `init()`, e confirmar que a coluna e o índice aparecem e que as linhas
-  existentes sobrevivem. Este é o teste que protege os cafés reais.
+- **Migração.** Este é o teste que protege os cafés reais e é o mais fácil de
+  escrever de forma que passe sem perguntar nada. **Não serve** criar uma base
+  nova e verificar que a coluna existe: a DDL já a tem, logo passa sempre. Tem
+  de ser, por esta ordem, num ficheiro temporário e nunca numa base real:
+  1. escrever à mão a DDL **anterior** da tabela `cafes`, sem `cliente_id`;
+  2. inserir lá uma linha;
+  3. só então correr `init()`;
+  4. afirmar que a coluna existe, que o índice parcial existe, e que a linha
+     inserida no passo 2 **continua lá** com `cliente_id IS NULL`.
 - **Mês pago:** um café com `em` dentro de um mês já pago é gravado com `agora`.
 - **Notificação tardia:** um café com `em` de há duas horas não gera push de
   `cafe`; um que cruze o limiar de stock gera `stock_baixo` na mesma.

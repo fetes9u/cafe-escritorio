@@ -1,0 +1,6 @@
+# Force LF on checkout regardless of the user's core.autocrlf. The service worker
+# test compares the served bytes against the file on disk, so a CRLF checkout on
+# Windows makes it fail for a reason that has nothing to do with the code.
+* text=auto eol=lf
+*.png binary
+*.ico binary

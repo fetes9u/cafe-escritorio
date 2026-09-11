@@ -321,3 +321,11 @@ $("abas").onclick = async (ev) => {
   try { await entrar(); }
   catch { await carregarNomes(); mostrar("entrada"); }
 })();
+
+// ---------- service worker (app shell offline) ----------
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cafe-data
+  namespace: cafe
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # storageClassName omitido de propósito: usa a StorageClass default do cluster.
+  # Em k3s costuma ser `local-path`, que prende o volume ao nó — ver README (backup).
+  resources:
+    requests:
+      storage: 1Gi

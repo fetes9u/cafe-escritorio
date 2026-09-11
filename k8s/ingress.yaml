@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cafe
+  namespace: cafe
+  # annotations:
+  #   cert-manager.io/cluster-issuer: letsencrypt   # se o cluster tiver cert-manager
+spec:
+  # ingressClassName: traefik   # omitido: usa a classe default (em k3s é o traefik)
+  rules:
+    - host: cafe.example.com      # <- mudar
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cafe
+                port: { number: 80 }
+  # tls:
+  #   - hosts: [cafe.example.com]
+  #     secretName: cafe-tls

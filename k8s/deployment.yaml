@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cafe
+  namespace: cafe
+  labels: { app: cafe }
+spec:
+  # SQLite num PVC ReadWriteOnce: NUNCA mais do que 1 réplica, e Recreate para o
+  # pod novo só arrancar depois de o antigo largar o volume.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: cafe }
+  template:
+    metadata:
+      labels: { app: cafe }
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000          # o PVC fica do utilizador `cafe` da imagem
+      # imagePullSecrets:      # descomentar se a imagem estiver num registry privado
+      #   - name: ghcr-cred
+      containers:
+        - name: cafe
+          image: ghcr.io/CONTA/cafe-escritorio:0.1.0   # <- mudar
+          ports:
+            - containerPort: 8000
+          env:
+            - name: CAFE_DB
+              value: /data/cafe.db
+            - name: CAFE_TZ
+              value: Europe/Lisbon
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /api/utilizadores, port: 8000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/utilizadores, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cafe-data

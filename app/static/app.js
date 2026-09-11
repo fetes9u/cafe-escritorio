@@ -359,9 +359,11 @@ function showInstallBanner(text, withButton) {
   $("instalar-texto").textContent = text;
   $("instalar-btn").hidden = !withButton;
   $("instalar").hidden = false;
+  document.body.classList.add("com-faixa-instalar");
 }
 function hideInstallBanner() {
   $("instalar").hidden = true;
+  document.body.classList.remove("com-faixa-instalar");
 }
 
 $("instalar-fechar").onclick = () => {

@@ -202,6 +202,11 @@ $("btn-sair").onclick = async () => {
 
 async function carregarEscritorio(mes) {
   escritorio = await api("GET", "/escritorio" + (mes ? `?mes=${mes}` : ""));
+  if (!mes && escritorio.meses.length > 1) {
+    // Sem mês escolhido: se o mês anterior ainda tem pagamentos por fazer, abre nele.
+    const anterior = await api("GET", `/escritorio?mes=${escritorio.meses[1]}`);
+    if (anterior.pessoas.some((p) => p.cafes > 0 && !p.pago)) escritorio = anterior;
+  }
   desenharEscritorio();
 }
 

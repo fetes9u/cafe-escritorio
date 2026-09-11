@@ -93,6 +93,7 @@ usa a API de backup, que produz um ficheiro consistente:
 ```bash
 kubectl -n cafe exec deploy/cafe -- python -c "import sqlite3; s=sqlite3.connect('/data/cafe.db'); d=sqlite3.connect('/data/backup.db'); s.backup(d); d.close()"
 kubectl -n cafe cp $(kubectl -n cafe get pod -l app=cafe -o name | cut -d/ -f2):/data/backup.db ./cafe-$(date +%F).db
+kubectl -n cafe exec deploy/cafe -- rm /data/backup.db
 ```
 
 Restore: escala o deployment para 0, copia o ficheiro para `/data/cafe.db` (com

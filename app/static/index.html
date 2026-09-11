@@ -74,6 +74,22 @@
     <div id="ant-estado" class="nota"></div>
   </div>
 
+  <details class="cartao" id="notif-secao">
+    <summary>Notificações</summary>
+    <p id="notif-estado" class="nota"></p>
+    <p id="notif-ios-aviso" class="nota" hidden>No iPhone, as notificações só funcionam com a app instalada no ecrã principal: toca em Partilhar e depois em «Adicionar ao ecrã principal».</p>
+    <button type="button" id="btn-notif-ativar" class="secundario" hidden>Receber notificações</button>
+    <form id="form-notif-prefs" hidden>
+      <p class="nota">Por omissão recebes tudo; desliga o que não quiseres.</p>
+      <label><input type="checkbox" data-evento="cafe" checked> Alguém bebeu um café</label>
+      <label><input type="checkbox" data-evento="compra" checked> Alguém repôs cápsulas</label>
+      <label><input type="checkbox" data-evento="pagamento" checked> Alguém marcou um pagamento</label>
+      <label><input type="checkbox" data-evento="stock_baixo" checked> O stock ficou baixo</label>
+      <label><input type="checkbox" data-evento="registo" checked> Um colega novo se registou</label>
+    </form>
+    <button type="button" id="btn-notif-cancelar" class="ligacao" hidden>Cancelar subscrição neste dispositivo</button>
+  </details>
+
   <footer class="rodape">
     <button id="btn-desfazer" class="ligacao">Apagar o último café</button> ·
     <button id="btn-pin" class="ligacao">Mudar PIN</button> ·

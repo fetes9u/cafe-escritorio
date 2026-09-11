@@ -65,6 +65,10 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 #form-compra input { flex: 1; min-width: 90px; }
 #form-config { flex-direction: column; align-items: stretch; }
 
+#form-notif-prefs label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+#form-notif-prefs input[type="checkbox"] { width: auto; margin-top: 0; }
+#notif-secao .secundario { margin-top: 10px; }
+
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--texto); color: #fff;
   padding: 10px 16px; border-radius: 10px; max-width: 90%; box-shadow: 0 4px 14px rgba(0,0,0,.25); z-index: 9; }
 #toast.erro { background: var(--aviso); }

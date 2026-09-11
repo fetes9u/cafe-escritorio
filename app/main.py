@@ -111,7 +111,7 @@ def lista_utilizadores():
 
 
 @app.post("/api/registar", status_code=201)
-def registar(body: Registo, request: Request, resp: Response):
+def registar(body: Registo, request: Request, resp: Response, background_tasks: BackgroundTasks):
     _valida_pin(body.pin)
     nome = body.nome.strip()
     with db.conn() as c:
@@ -122,6 +122,7 @@ def registar(body: Registo, request: Request, resp: Response):
             (nome, _hash_pin(body.pin), body.cafes_dia, logic.agora().isoformat()),
         )
         _abre_sessao(c, cur.lastrowid, request, resp)
+    _avisar(background_tasks, "registo", f"{nome} juntou-se ao café", cur.lastrowid)
     return {"id": cur.lastrowid, "nome": nome}
 
 
@@ -333,13 +334,16 @@ def eu(u: dict = Depends(utilizador_actual)):
 
 
 @app.post("/api/cafe", status_code=201)
-def marcar_cafe(u: dict = Depends(utilizador_actual)):
+def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     agora = logic.agora()
     with db.conn() as c:
+        stock_antes = _stock(c)
         c.execute(
             "INSERT INTO cafes (utilizador_id, em, mes) VALUES (?, ?, ?)",
             (u["id"], agora.isoformat(), logic.mes_de(agora)),
         )
+        _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
+    _avisar(background_tasks, "cafe", f"{u['nome']} bebeu um café", u["id"])
     return {"ok": True}
 
 
@@ -431,26 +435,29 @@ class Compra(BaseModel):
 
 
 @app.post("/api/compras", status_code=201)
-def registar_compra(body: Compra, u: dict = Depends(utilizador_actual)):
+def registar_compra(body: Compra, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
         c.execute(
             "INSERT INTO compras (utilizador_id, capsulas, em, nota) VALUES (?, ?, ?, ?)",
             (u["id"], body.capsulas, logic.agora().isoformat(), body.nota),
         )
+    _avisar(background_tasks, "compra", f"{u['nome']} repôs {body.capsulas} cápsulas", u["id"])
     return {"ok": True}
 
 
 @app.delete("/api/compras/{compra_id}")
-def apagar_compra(compra_id: int, u: dict = Depends(utilizador_actual)):
+def apagar_compra(compra_id: int, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
         compra = c.execute("SELECT * FROM compras WHERE id = ?", (compra_id,)).fetchone()
         if not compra:
             raise HTTPException(404, "Entrada não existe.")
         if compra["utilizador_id"] != u["id"]:
             raise HTTPException(403, "Só quem registou a entrada a pode apagar.")
-        if _stock(c) - compra["capsulas"] < 0:
+        stock_antes = _stock(c)
+        if stock_antes - compra["capsulas"] < 0:
             raise HTTPException(409, "Não se pode apagar: o stock ficaria negativo.")
         c.execute("DELETE FROM compras WHERE id = ?", (compra_id,))
+        _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
     return {"ok": True}
 
 
@@ -460,13 +467,14 @@ class Pagamento(BaseModel):
 
 
 @app.post("/api/pagamentos", status_code=201)
-def registar_pagamento(body: Pagamento, u: dict = Depends(utilizador_actual)):
+def registar_pagamento(body: Pagamento, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     """Quem está autenticado é quem recebeu o dinheiro."""
     mes_actual = logic.mes_de(logic.agora())
     if body.mes >= mes_actual:
         raise HTTPException(400, "Só se fecham meses já terminados.")
     with db.conn() as c:
-        if not c.execute("SELECT 1 FROM utilizadores WHERE id = ?", (body.pagador_id,)).fetchone():
+        pagador = c.execute("SELECT nome FROM utilizadores WHERE id = ?", (body.pagador_id,)).fetchone()
+        if not pagador:
             raise HTTPException(404, "Pagador não existe.")
         if _pagamento(c, body.mes, body.pagador_id):
             raise HTTPException(409, "Esse pagamento já está registado.")
@@ -476,7 +484,9 @@ def registar_pagamento(body: Pagamento, u: dict = Depends(utilizador_actual)):
             "INSERT INTO pagamentos (mes, pagador_id, recebedor_id, capsulas, valor_cent, em) VALUES (?, ?, ?, ?, ?, ?)",
             (body.mes, body.pagador_id, u["id"], n, n * preco, logic.agora().isoformat()),
         )
-    return {"ok": True, "capsulas": n, "valor_cent": n * preco}
+    valor_cent = n * preco
+    _avisar(background_tasks, "pagamento", f"{pagador['nome']} pagou {_euros(valor_cent)} EUR a {u['nome']}", u["id"])
+    return {"ok": True, "capsulas": n, "valor_cent": valor_cent}
 
 
 @app.delete("/api/pagamentos/{mes}/{pagador_id}")
@@ -504,6 +514,75 @@ def alterar_config(body: Config, u: dict = Depends(utilizador_actual)):
             db.set_config(c, "preco_cent", str(body.preco_cent))
         if body.stock_baixo is not None:
             db.set_config(c, "stock_baixo", str(body.stock_baixo))
+    return {"ok": True}
+
+
+# ---------- push e notificações ----------
+
+@app.get("/api/push/chave")
+def chave_push():
+    chave = os.environ.get("CAFE_VAPID_PUBLIC")
+    if not chave:
+        raise HTTPException(503, "As notificações push não estão configuradas neste servidor.")
+    return {"chave_publica": chave}
+
+
+class Subscricao(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+    dispositivo: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/api/push/subscricoes", status_code=201)
+def subscrever_push(body: Subscricao, u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO subscricoes (endpoint, utilizador_id, p256dh, auth, dispositivo, criado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET utilizador_id = excluded.utilizador_id, "
+            "p256dh = excluded.p256dh, auth = excluded.auth, dispositivo = excluded.dispositivo, "
+            "criado_em = excluded.criado_em",
+            (body.endpoint, u["id"], body.p256dh, body.auth, body.dispositivo, logic.agora().isoformat()),
+        )
+    return {"ok": True}
+
+
+class CancelarSubscricao(BaseModel):
+    endpoint: str
+
+
+@app.delete("/api/push/subscricoes")
+def cancelar_subscricao(body: CancelarSubscricao, u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        c.execute(
+            "DELETE FROM subscricoes WHERE endpoint = ? AND utilizador_id = ?", (body.endpoint, u["id"])
+        )
+    return {"ok": True}
+
+
+@app.get("/api/notificacoes/preferencias")
+def obter_preferencias(u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        desligados = _preferencias_desligadas(c, u["id"])
+    return {evento: evento not in desligados for evento in EVENTOS}
+
+
+class Preferencias(BaseModel):
+    desligados: list[str] = Field(default_factory=list)
+
+
+@app.put("/api/notificacoes/preferencias")
+def alterar_preferencias(body: Preferencias, u: dict = Depends(utilizador_actual)):
+    invalidos = sorted(set(body.desligados) - set(EVENTOS))
+    if invalidos:
+        raise HTTPException(400, f"Evento(s) desconhecido(s): {', '.join(invalidos)}.")
+    with db.conn() as c:
+        c.execute("DELETE FROM notificacoes_desligadas WHERE utilizador_id = ?", (u["id"],))
+        c.executemany(
+            "INSERT INTO notificacoes_desligadas (utilizador_id, evento) VALUES (?, ?)",
+            [(u["id"], evento) for evento in body.desligados],
+        )
     return {"ok": True}
 
 

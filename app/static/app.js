@@ -329,3 +329,67 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });
 }
+
+// ---------- install prompt (PWA) ----------
+
+const IOS_HINT_DISMISSED_KEY = "cafe-ios-install-hint-dismissed";
+
+function readLocal(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function writeLocal(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* private mode or blocked storage: no memory, no harm */ }
+}
+
+function isIOS() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function isSafari() {
+  const ua = navigator.userAgent;
+  return /safari/i.test(ua) && !/crios|fxios|edgios|opios|android/i.test(ua);
+}
+function isStandalone() {
+  return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
+
+let installEvent = null;
+
+function showInstallBanner(text, withButton) {
+  $("instalar-texto").textContent = text;
+  $("instalar-btn").hidden = !withButton;
+  $("instalar").hidden = false;
+}
+function hideInstallBanner() {
+  $("instalar").hidden = true;
+}
+
+$("instalar-fechar").onclick = () => {
+  hideInstallBanner();
+  if (isIOS()) writeLocal(IOS_HINT_DISMISSED_KEY, "1");
+};
+
+$("instalar-btn").onclick = async () => {
+  if (!installEvent) return;
+  hideInstallBanner();
+  installEvent.prompt();
+  try { await installEvent.userChoice; } catch { /* user dismissed the native prompt */ }
+  installEvent = null;
+};
+
+// Android/Chrome: the browser offers the install event, so we show a button.
+window.addEventListener("beforeinstallprompt", (ev) => {
+  ev.preventDefault();
+  installEvent = ev;
+  showInstallBanner("Instala a app para teres acesso rápido, sem abrir o browser.", true);
+});
+
+window.addEventListener("appinstalled", () => {
+  hideInstallBanner();
+  installEvent = null;
+});
+
+// iOS/Safari: there is no beforeinstallprompt, so the hint is manual and shown only once.
+if (!isStandalone() && isIOS() && isSafari() && !readLocal(IOS_HINT_DISMISSED_KEY)) {
+  showInstallBanner("Para instalar: toca em Partilhar e depois em «Adicionar ao ecrã principal».", false);
+}

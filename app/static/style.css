@@ -68,3 +68,12 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--texto); color: #fff;
   padding: 10px 16px; border-radius: 10px; max-width: 90%; box-shadow: 0 4px 14px rgba(0,0,0,.25); z-index: 9; }
 #toast.erro { background: var(--aviso); }
+
+.faixa-instalar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 8;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--cafe); color: #fff; padding: 10px 14px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  box-shadow: 0 -2px 12px rgba(0,0,0,.2); }
+.faixa-instalar span { flex: 1; font-size: .92rem; }
+.faixa-instalar button:not(.ligacao) { background: #fff; color: var(--cafe); flex-shrink: 0; }
+.faixa-instalar .ligacao { color: #fff; opacity: .85; flex-shrink: 0; }

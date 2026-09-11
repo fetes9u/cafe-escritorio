@@ -5,7 +5,7 @@
    API response could show one person the data of another. */
 "use strict";
 
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const CACHE_NAME = "cafe-shell-" + CACHE_VERSION;
 
 const SHELL_URLS = [

@@ -54,11 +54,48 @@ def _eventos_do_formulario() -> list[str]:
     return eventos
 
 
+def _verifica_payload_do_cliente_para_notificacoes() -> str:
+    """Verify that app.js sends a map of eventos (keyed by chk.dataset.evento, valued by
+    chk.checked) to PUT /notificacoes/preferencias, NOT a {"desligados": [...]} list.
+
+    Extracts the payload structure directly from the form change handler in app.js.
+    Returns the field name used for the event key (expected to be "evento"), or raises
+    AssertionError if the structure doesn't match, with a message explaining the
+    client/server shape mismatch."""
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    # Must find: prefs[chk.dataset.<evento>] = chk.checked
+    # This proves client builds {evento: boolean}, not {desligados: [...]}.
+    m = re.search(r'prefs\[chk\.dataset\.(\w+)\]\s*=\s*chk\.(checked)', js)
+    assert m, (
+        "Client payload structure mismatch: app.js form change handler does not build "
+        "`prefs[chk.dataset.<field>] = chk.checked`. Is the client sending "
+        "`{desligados: [...]}` or some other structure instead of an event map?"
+    )
+
+    event_field = m.group(1)
+    value_field = m.group(2)
+    assert value_field == "checked", (
+        f"Expected checkbox value from `.checked`, but client uses `.{value_field}`"
+    )
+
+    return event_field
+
+
 def test_o_mapa_que_o_cliente_monta_fica_mesmo_gravado(cliente):
     """Sends exactly what app.js's form change handler assembles: a map of
     every event in the form to its checked state, never a {"desligados": [...]}
     list. A 200 alone does not prove anything was written, so this reads the
     preference back through GET afterwards."""
+
+    # Verify app.js builds the payload as a map, not a list
+    event_field = _verifica_payload_do_cliente_para_notificacoes()
+    assert event_field == "evento", (
+        f"Client and server disagree on payload SHAPE: app.js uses field `{event_field}` "
+        f"but server expects `evento`. The payload is a map keyed by the event name; "
+        f"this mismatch means the client's change will be silently dropped."
+    )
+
     a = regista(cliente, "Ana")
     eventos = _eventos_do_formulario()
 

@@ -58,3 +58,33 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+/* ---------- web push ---------- */
+
+self.addEventListener("push", (event) => {
+  let dados = {};
+  if (event.data) {
+    try { dados = event.data.json(); } catch { dados = { corpo: event.data.text() }; }
+  }
+  const titulo = dados.titulo || "Café do escritório";
+  const opcoes = {
+    body: dados.corpo || "",
+    icon: "/static/icons/icon-192.png",
+    badge: "/static/icons/icon-192.png",
+    data: { url: dados.url || "/" },
+  };
+  event.waitUntil(self.registration.showNotification(titulo, opcoes));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const destino = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((janelas) => {
+      for (const janela of janelas) {
+        if (janela.url.startsWith(self.location.origin) && "focus" in janela) return janela.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(destino);
+    })
+  );
+});

@@ -1,8 +1,8 @@
 """API do café do escritório. Uma app FastAPI que também serve o front-end estático."""
 import hashlib
-import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -15,14 +15,35 @@ from . import db, logic
 MAX_TENTATIVAS = 5
 BLOQUEIO = timedelta(seconds=60)
 COOKIE = "cafe_sessao"
+SESSAO_DIAS = 180
 STATIC = Path(__file__).parent / "static"
 
-app = FastAPI(title="Café do escritório", docs_url=None, redoc_url=None)
 
 
-@app.on_event("startup")
-def _startup():
+@asynccontextmanager
+async def _lifespan(_app):
     db.init()
+    yield
+
+
+app = FastAPI(title="Café do escritório", docs_url=None, redoc_url=None, lifespan=_lifespan)
+
+
+@app.middleware("http")
+async def _cabecalhos(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:"
+    return resp
+
+
+def _hoje():
+    return logic.local(logic.agora()).date()
+
+
+def _data_registo(iso: str):
+    return logic.local(datetime.fromisoformat(iso)).date()
 
 
 # ---------- autenticação ----------
@@ -43,10 +64,12 @@ def _valida_pin(pin: str) -> None:
         raise HTTPException(400, "O PIN tem de ter exactamente 4 dígitos.")
 
 
-def _abre_sessao(c, utilizador_id: int, resp: Response) -> None:
+def _abre_sessao(c, utilizador_id: int, request: Request, resp: Response) -> None:
     token = secrets.token_urlsafe(32)
     c.execute("INSERT INTO sessoes VALUES (?, ?, ?)", (token, utilizador_id, logic.agora().isoformat()))
-    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=365 * 24 * 3600)
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", secure=https,
+                    max_age=SESSAO_DIAS * 24 * 3600)
 
 
 def utilizador_actual(request: Request) -> dict:
@@ -82,7 +105,7 @@ def lista_utilizadores():
 
 
 @app.post("/api/registar", status_code=201)
-def registar(body: Registo, resp: Response):
+def registar(body: Registo, request: Request, resp: Response):
     _valida_pin(body.pin)
     nome = body.nome.strip()
     with db.conn() as c:
@@ -92,12 +115,12 @@ def registar(body: Registo, resp: Response):
             "INSERT INTO utilizadores (nome, pin_hash, cafes_dia, criado_em) VALUES (?, ?, ?, ?)",
             (nome, _hash_pin(body.pin), body.cafes_dia, logic.agora().isoformat()),
         )
-        _abre_sessao(c, cur.lastrowid, resp)
+        _abre_sessao(c, cur.lastrowid, request, resp)
     return {"id": cur.lastrowid, "nome": nome}
 
 
 @app.post("/api/login")
-def login(body: Login, resp: Response):
+def login(body: Login, request: Request, resp: Response):
     _valida_pin(body.pin)
     with db.conn() as c:
         u = c.execute("SELECT * FROM utilizadores WHERE id = ?", (body.utilizador_id,)).fetchone()
@@ -106,16 +129,20 @@ def login(body: Login, resp: Response):
         agora = logic.agora()
         if u["bloqueado_ate"] and datetime.fromisoformat(u["bloqueado_ate"]) > agora:
             raise HTTPException(429, "Demasiadas tentativas. Espera um minuto.")
-        if not _verifica_pin(body.pin, u["pin_hash"]):
+        pin_certo = _verifica_pin(body.pin, u["pin_hash"])
+        if pin_certo:
+            c.execute("UPDATE utilizadores SET tentativas = 0, bloqueado_ate = NULL WHERE id = ?", (u["id"],))
+            _abre_sessao(c, u["id"], request, resp)
+        else:
             tentativas = u["tentativas"] + 1
             bloqueado = (agora + BLOQUEIO).isoformat() if tentativas >= MAX_TENTATIVAS else None
             c.execute(
                 "UPDATE utilizadores SET tentativas = ?, bloqueado_ate = ? WHERE id = ?",
                 (0 if bloqueado else tentativas, bloqueado, u["id"]),
             )
-            raise HTTPException(401, "PIN errado.")
-        c.execute("UPDATE utilizadores SET tentativas = 0, bloqueado_ate = NULL WHERE id = ?", (u["id"],))
-        _abre_sessao(c, u["id"], resp)
+    # fora do `with`: o commit só acontece no caminho normal do gestor de contexto
+    if not pin_certo:
+        raise HTTPException(401, "PIN errado.")
     return {"id": u["id"], "nome": u["nome"]}
 
 
@@ -147,11 +174,10 @@ def _cafes_por_utilizador(c, mes: str) -> dict[int, int]:
 def _resumo_stock(c, hoje) -> dict:
     """Ritmo do escritório = soma do ritmo de cada pessoa (real ou declarado)."""
     mes = hoje.strftime("%Y-%m")
-    inicio, _ = logic.limites_mes(mes)
-    decorridos = logic.dias_uteis(inicio, hoje)
     por_user = _cafes_por_utilizador(c, mes)
     ritmo = 0.0
-    for u in c.execute("SELECT id, cafes_dia FROM utilizadores").fetchall():
+    for u in c.execute("SELECT id, cafes_dia, criado_em FROM utilizadores").fetchall():
+        decorridos = logic.dias_decorridos(mes, hoje, _data_registo(u["criado_em"]))
         ritmo += logic.ritmo_diario(por_user.get(u["id"], 0), decorridos, u["cafes_dia"])
     return logic.resumo_stock(_stock(c), ritmo, hoje, int(db.get_config(c, "stock_baixo")))
 
@@ -169,21 +195,17 @@ def _pagamento(c, mes: str, pagador_id: int) -> dict | None:
 
 @app.get("/api/eu")
 def eu(u: dict = Depends(utilizador_actual)):
-    hoje = logic.local(logic.agora()).date()
+    hoje = _hoje()
     mes = hoje.strftime("%Y-%m")
     anterior = logic.mes_anterior(mes)
     with db.conn() as c:
         preco = int(db.get_config(c, "preco_cent"))
         cafes = _cafes_por_utilizador(c, mes).get(u["id"], 0)
         cafes_ant = _cafes_por_utilizador(c, anterior).get(u["id"], 0)
-        hoje_n = c.execute(
-            "SELECT COUNT(*) AS n FROM cafes WHERE utilizador_id = ? AND substr(em, 1, 10) >= ?",
-            (u["id"], (logic.agora() - timedelta(hours=36)).date().isoformat()),
-        ).fetchone()["n"]
         ultimo = c.execute(
             "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY id DESC LIMIT 1", (u["id"],)
         ).fetchone()
-        estimativa = logic.estimativa_mes(cafes, hoje, mes, u["cafes_dia"])
+        estimativa = logic.estimativa_mes(cafes, hoje, mes, u["cafes_dia"], _data_registo(u["criado_em"]))
         pag = _pagamento(c, anterior, u["id"])
         stock = _resumo_stock(c, hoje)
     return {
@@ -261,7 +283,7 @@ def alterar_pin(body: NovoPin, u: dict = Depends(utilizador_actual)):
 
 @app.get("/api/escritorio")
 def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
-    hoje = logic.local(logic.agora()).date()
+    hoje = _hoje()
     mes_actual = hoje.strftime("%Y-%m")
     mes = mes or mes_actual
     with db.conn() as c:
@@ -280,12 +302,13 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
         if mes_actual not in meses:
             meses.insert(0, mes_actual)
         compras = [dict(r) for r in c.execute(
-            "SELECT co.id, co.capsulas, co.em, co.nota, u.nome FROM compras co "
+            "SELECT co.id, co.capsulas, co.em, co.nota, co.utilizador_id, u.nome FROM compras co "
             "LEFT JOIN utilizadores u ON u.id = co.utilizador_id ORDER BY co.id DESC LIMIT 20"
         ).fetchall()]
         stock = _resumo_stock(c, hoje)
     total = sum(p["cafes"] for p in pessoas)
     return {
+        "eu": u["id"],
         "mes": mes,
         "mes_actual": mes_actual,
         "meses": meses,
@@ -316,8 +339,14 @@ def registar_compra(body: Compra, u: dict = Depends(utilizador_actual)):
 @app.delete("/api/compras/{compra_id}")
 def apagar_compra(compra_id: int, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
-        if c.execute("DELETE FROM compras WHERE id = ?", (compra_id,)).rowcount == 0:
-            raise HTTPException(404, "Compra não existe.")
+        compra = c.execute("SELECT * FROM compras WHERE id = ?", (compra_id,)).fetchone()
+        if not compra:
+            raise HTTPException(404, "Entrada não existe.")
+        if compra["utilizador_id"] != u["id"]:
+            raise HTTPException(403, "Só quem registou a entrada a pode apagar.")
+        if _stock(c) - compra["capsulas"] < 0:
+            raise HTTPException(409, "Não se pode apagar: o stock ficaria negativo.")
+        c.execute("DELETE FROM compras WHERE id = ?", (compra_id,))
     return {"ok": True}
 
 

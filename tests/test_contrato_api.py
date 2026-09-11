@@ -10,9 +10,12 @@ does from app.js/index.html with a regex instead of retyping a field name,
 event name or route by hand, so changing either side without changing the
 other is what makes the test fail, not a hand-maintained expectation.
 """
+import json
 import re
+from unittest.mock import MagicMock
 
-from app.main import STATIC, app
+from app import main as app_main
+from app.main import EVENTOS, STATIC, app
 from tests.conftest import regista
 
 
@@ -144,3 +147,59 @@ def test_todas_as_rotas_chamadas_pelo_app_js_existem_na_app():
     existentes = _rotas_da_app()
     em_falta = chamadas - existentes
     assert not em_falta, f"app.js calls routes that do not exist in the app: {sorted(em_falta)}"
+
+
+# ---------- push payload: every field sw.js reads must be present, and non-empty ----------
+
+def _campos_lidos_pelo_push_handler() -> set[str]:
+    """The fields the `push` listener in sw.js reads off the pushed JSON
+    (`dados.<campo>`), extracted from the source instead of hardcoded, so a
+    field renamed or removed on either side is what breaks this test."""
+    js = (STATIC / "sw.js").read_text(encoding="utf-8")
+    m = re.search(r'self\.addEventListener\("push".*?\n\}\);', js, re.S)
+    assert m, "could not find the `push` event listener in sw.js; did it change?"
+    campos = set(re.findall(r"dados\.(\w+)", m.group(0)))
+    assert campos, "could not find any `dados.<campo>` read in the push handler in sw.js"
+    return campos
+
+
+def test_a_notificacao_enviada_tem_todos_os_campos_que_o_sw_le_para_todos_os_eventos(cliente, monkeypatch):
+    """For every evento the server can send, the payload actually put on the
+    wire must carry every field sw.js's push handler reads, and titulo/corpo
+    must not just be present but non-empty: a payload with the right keys and
+    an empty value is the same bug (empty notification) wearing a different
+    hat."""
+    monkeypatch.setenv("CAFE_VAPID_PRIVATE", "chave-privada-de-teste")
+    monkeypatch.setenv("CAFE_VAPID_PUBLIC", "chave-publica-de-teste")
+    monkeypatch.setenv("CAFE_VAPID_CONTACTO", "mailto:teste@exemplo.pt")
+    monkeypatch.setattr(app_main, "_vapid_instance", lambda: object())
+    mock = MagicMock()
+    monkeypatch.setattr(app_main, "webpush", mock)
+
+    destinatario = regista(cliente, "Ana")
+    destinatario.post(
+        "/api/push/subscricoes",
+        json={"endpoint": "https://push.example/ana", "p256dh": "p", "auth": "a"},
+    )
+    autor_id = 0  # never matches the recipient's id, so Ana always gets notified
+
+    campos_lidos = _campos_lidos_pelo_push_handler()
+
+    for evento in EVENTOS:
+        mock.reset_mock()
+        app_main._enviar_notificacao(evento, f"mensagem de teste para {evento}", autor_id)
+
+        mock.assert_called_once()
+        payload = json.loads(mock.call_args.kwargs["data"])
+
+        em_falta = campos_lidos - set(payload)
+        assert not em_falta, (
+            f"evento={evento}: sw.js reads {sorted(campos_lidos)} from the pushed JSON, "
+            f"but the server's payload is missing {sorted(em_falta)}: {payload}"
+        )
+        assert isinstance(payload.get("titulo"), str) and payload["titulo"], (
+            f"evento={evento}: `titulo` must be a non-empty string, got {payload.get('titulo')!r}"
+        )
+        assert isinstance(payload.get("corpo"), str) and payload["corpo"], (
+            f"evento={evento}: `corpo` must be a non-empty string, got {payload.get('corpo')!r}"
+        )

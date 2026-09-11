@@ -24,6 +24,19 @@ STATIC = Path(__file__).parent / "static"
 
 EVENTOS = ("cafe", "compra", "pagamento", "stock_baixo", "registo")
 
+# Titles shown in the push notification for each evento. These names must
+# match exactly what app/static/sw.js's push handler reads off the pushed
+# JSON (`dados.titulo`), see the contract test in tests/test_contrato_api.py
+# that extracts the field names from sw.js and checks the server actually
+# fills them. Short on purpose: a phone truncates a long title.
+TITULOS_EVENTO = {
+    "cafe": "Café",
+    "compra": "Stock reposto",
+    "pagamento": "Pagamento",
+    "stock_baixo": "Stock baixo",
+    "registo": "Colega novo",
+}
+
 
 
 @asynccontextmanager
@@ -261,7 +274,8 @@ def _enviar_notificacao(evento: str, mensagem: str, autor_id: int) -> None:
     if not destinatarios:
         return
     vv = _vapid_instance()
-    payload = json.dumps({"evento": evento, "mensagem": mensagem})
+    titulo = TITULOS_EVENTO.get(evento, "Café do escritório")
+    payload = json.dumps({"titulo": titulo, "corpo": mensagem, "url": "/", "evento": evento})
     claims_base = {"sub": os.environ["CAFE_VAPID_CONTACTO"]}
     for sub in destinatarios:
         try:

@@ -188,7 +188,7 @@ def test_pagamento_notifica_o_pagador(cliente, push_configurado, relogio):
 
     push_configurado.assert_called_once()
     assert _endpoints_avisados(push_configurado) == {"https://push.example/rui"}
-    mensagem = json.loads(push_configurado.call_args.kwargs["data"])["mensagem"]
+    mensagem = json.loads(push_configurado.call_args.kwargs["data"])["corpo"]
     assert "Rui" in mensagem and "Ana" in mensagem
 
 
@@ -207,7 +207,7 @@ def test_stock_baixo_dispara_na_transicao_e_nao_se_repete_ate_repor(cliente, pus
     for _ in range(6):
         assert a.post("/api/cafe").status_code == 201
 
-    mensagens = [json.loads(c.kwargs["data"])["mensagem"] for c in push_configurado.call_args_list]
+    mensagens = [json.loads(c.kwargs["data"])["corpo"] for c in push_configurado.call_args_list]
     # stock: 6,5,4,3,2,1,0 -- cruza o limiar (3) ao 3o cafe, chega a zero ao 6o.
     assert len(mensagens) == 2
     assert "3" in mensagens[0]

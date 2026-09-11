@@ -50,6 +50,22 @@ CREATE TABLE IF NOT EXISTS config (
 );
 INSERT OR IGNORE INTO config VALUES ('preco_cent', '25');
 INSERT OR IGNORE INTO config VALUES ('stock_baixo', '16');
+CREATE TABLE IF NOT EXISTS subscricoes (
+    endpoint TEXT PRIMARY KEY,
+    utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id) ON DELETE CASCADE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    dispositivo TEXT,
+    criado_em TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS subscricoes_utilizador ON subscricoes(utilizador_id);
+-- Só guarda o que a pessoa DESLIGOU. Ausência de linha significa ligado, que é
+-- o padrão. Evita semear cinco linhas por cada conta nova.
+CREATE TABLE IF NOT EXISTS notificacoes_desligadas (
+    utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id) ON DELETE CASCADE,
+    evento TEXT NOT NULL,
+    PRIMARY KEY (utilizador_id, evento)
+);
 """
 
 

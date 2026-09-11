@@ -69,6 +69,10 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 #form-notif-prefs input[type="checkbox"] { width: auto; margin-top: 0; }
 #notif-secao .secundario { margin-top: 10px; }
 
+.aviso-fila { color: var(--cafe-claro); font-weight: 600; margin: 4px 0 14px; }
+.aviso-fotografia { background: var(--aviso-fundo); color: var(--aviso); padding: 8px 10px; border-radius: 8px; margin-bottom: 12px; }
+#desfazer-razao { display: block; margin-top: 4px; }
+
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--texto); color: #fff;
   padding: 10px 16px; border-radius: 10px; max-width: 90%; box-shadow: 0 4px 14px rgba(0,0,0,.25); z-index: 9; }
 #toast.erro { background: var(--aviso); }

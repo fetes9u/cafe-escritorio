@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS cafes (
     id INTEGER PRIMARY KEY,
     utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id),
     em TEXT NOT NULL,        -- instante UTC ISO
-    mes TEXT NOT NULL        -- 'YYYY-MM' em hora local, derivado ao gravar
+    mes TEXT NOT NULL,       -- 'YYYY-MM' em hora local, derivado ao gravar
+    cliente_id TEXT          -- UUID gerado pelo cliente, para idempotência offline
 );
 CREATE INDEX IF NOT EXISTS cafes_mes ON cafes(mes, utilizador_id);
 CREATE TABLE IF NOT EXISTS compras (
@@ -78,6 +79,14 @@ def init(path: str | None = None) -> None:
         os.makedirs(d, exist_ok=True)
     with conn() as c:
         c.executescript(SCHEMA)
+        # migração: a DDL acima só corre em base de dados nova.
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(cafes)")}
+        if "cliente_id" not in cols:
+            c.execute("ALTER TABLE cafes ADD COLUMN cliente_id TEXT")
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS cafes_cliente_id "
+            "ON cafes(cliente_id) WHERE cliente_id IS NOT NULL"
+        )
 
 
 @contextmanager

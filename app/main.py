@@ -3,12 +3,13 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from py_vapid import Vapid
 from pydantic import BaseModel, Field
@@ -347,18 +348,83 @@ def eu(u: dict = Depends(utilizador_actual)):
     }
 
 
-@app.post("/api/cafe", status_code=201)
-def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
+class NovoCafe(BaseModel):
+    """Todos os campos opcionais: um cliente antigo em cache continua a
+    funcionar sem corpo nenhum."""
+    cliente_id: str | None = None
+    em: str | None = None
+
+
+JANELA_PASSADO = timedelta(days=7)
+JANELA_FUTURO = timedelta(minutes=5)
+ATRASO_SEM_NOTIFICAR = timedelta(minutes=15)
+
+
+def _aceita_em(c, em_bruto: str | None, agora: datetime, pagador_id: int) -> datetime:
+    """Regras da secção 4 da spec, por esta ordem: sem fuso ou não parseável
+    conta como ausente; fora da janela [agora-7d, agora+5min] usa agora; e um
+    instante que caia num mês já pago por esta pessoa também usa agora, para
+    não desalinhar a fotografia do pagamento da contagem recalculada."""
+    if not em_bruto:
+        return agora
+    try:
+        em = datetime.fromisoformat(em_bruto.replace("Z", "+00:00"))
+    except ValueError:
+        return agora
+    if em.tzinfo is None:
+        return agora
+    if not (agora - JANELA_PASSADO <= em <= agora + JANELA_FUTURO):
+        return agora
+    mes = logic.mes_de(em)
+    if c.execute(
+        "SELECT 1 FROM pagamentos WHERE mes = ? AND pagador_id = ?", (mes, pagador_id)
+    ).fetchone():
+        return agora
+    return em
+
+
+@app.post("/api/cafe")
+def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual),
+                body: NovoCafe | None = None):
     agora = logic.agora()
+    cliente_id = body.cliente_id if body else None
     with db.conn() as c:
+        if cliente_id:
+            existente = c.execute(
+                "SELECT em FROM cafes WHERE cliente_id = ?", (cliente_id,)
+            ).fetchone()
+            if existente:
+                return JSONResponse(status_code=200, content={
+                    "ok": True, "cliente_id": cliente_id, "em": existente["em"], "duplicado": True,
+                })
+        em = _aceita_em(c, body.em if body else None, agora, u["id"])
         stock_antes = _stock(c)
-        c.execute(
-            "INSERT INTO cafes (utilizador_id, em, mes) VALUES (?, ?, ?)",
-            (u["id"], agora.isoformat(), logic.mes_de(agora)),
-        )
+        try:
+            c.execute(
+                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id) VALUES (?, ?, ?, ?)",
+                (u["id"], em.isoformat(), logic.mes_de(em), cliente_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            # Duas requisições com o mesmo cliente_id podem intercalar-se entre
+            # o SELECT de deteção acima e este INSERT (retry de uma ligação
+            # instável, exactamente o caso que a idempotência existe para
+            # cobrir). Quem perde a corrida do INSERT lê a linha que a outra
+            # gravou e devolve o mesmo 200/duplicado, nunca um 500. Qualquer
+            # outra violação de integridade continua a propagar-se.
+            if cliente_id and "cafes.cliente_id" in str(exc):
+                existente = c.execute(
+                    "SELECT em FROM cafes WHERE cliente_id = ?", (cliente_id,)
+                ).fetchone()
+                return JSONResponse(status_code=200, content={
+                    "ok": True, "cliente_id": cliente_id, "em": existente["em"], "duplicado": True,
+                })
+            raise
         _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
-    _avisar(background_tasks, "cafe", f"{u['nome']} bebeu um café", u["id"])
-    return {"ok": True}
+    if agora - em <= ATRASO_SEM_NOTIFICAR:
+        _avisar(background_tasks, "cafe", f"{u['nome']} bebeu um café", u["id"])
+    return JSONResponse(status_code=201, content={
+        "ok": True, "cliente_id": cliente_id, "em": em.isoformat(), "duplicado": False,
+    })
 
 
 @app.delete("/api/cafe/ultimo")

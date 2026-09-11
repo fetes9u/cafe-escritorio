@@ -214,6 +214,44 @@ def test_stock_baixo_dispara_na_transicao_e_nao_se_repete_ate_repor(cliente, pus
     assert "0" in mensagens[1]
 
 
+# ---------- sincronização offline (cliente_id / em) ----------
+
+def test_cliente_id_repetido_nao_dispara_notificacao_na_segunda_vez(cliente, push_configurado):
+    a = regista(cliente, "Ana")
+    r = regista(cliente, "Rui")
+    r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
+    corpo = {"cliente_id": "cli-1"}
+
+    r1 = a.post("/api/cafe", json=corpo)
+    assert r1.status_code == 201
+    push_configurado.assert_called_once()
+    push_configurado.reset_mock()
+
+    r2 = a.post("/api/cafe", json=corpo)
+    assert r2.status_code == 200
+    assert r2.json()["duplicado"] is True
+    push_configurado.assert_not_called()
+
+
+def test_sincronizacao_tardia_nao_notifica_cafe_mas_stock_baixo_notifica(cliente, push_configurado, relogio):
+    relogio.set(2026, 9, 11, 9, 0)
+    a = regista(cliente, "Ana")
+    r = regista(cliente, "Rui")
+    r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
+    a.post("/api/compras", json={"capsulas": 6})
+    a.put("/api/config", json={"stock_baixo": 5})
+    push_configurado.reset_mock()  # ignore the "compra" notification from the setup above
+
+    em_tardio = "2026-09-11T07:00:00.000Z"  # 2h antes do agora, dentro da janela dos 7 dias
+    r_resp = a.post("/api/cafe", json={"em": em_tardio})
+    assert r_resp.status_code == 201
+    assert r_resp.json()["em"] == "2026-09-11T07:00:00+00:00"
+
+    mensagens = [json.loads(c.kwargs["data"])["corpo"] for c in push_configurado.call_args_list]
+    assert not any("bebeu" in m for m in mensagens), mensagens
+    assert any("Restam 5" in m for m in mensagens), mensagens
+
+
 def test_stock_baixo_nao_dispara_enquanto_se_mantem_acima_do_limiar(cliente, push_configurado):
     a = regista(cliente, "Ana")
     r = regista(cliente, "Rui")

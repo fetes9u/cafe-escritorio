@@ -208,7 +208,7 @@ def _euros(cent: int) -> str:
 # CAFE_VAPID_PRIVATE é o escalar privado de 32 bytes em base64url sem padding
 # (43 caracteres, tudo numa linha, sem cabeçalhos PEM). CAFE_VAPID_PUBLIC é o
 # ponto público X9.62 descomprimido (65 bytes) na mesma codificação
-# (87 caracteres) — é exactamente o valor devolvido por GET /api/push/chave e
+# (87 caracteres): é exactamente o valor devolvido por GET /api/push/chave e
 # o que o browser usa como applicationServerKey. Sem as três variáveis
 # (incluindo o contacto), a app arranca e funciona na mesma, sem push.
 
@@ -285,7 +285,7 @@ def _avisar(background_tasks: BackgroundTasks, evento: str, mensagem: str, autor
 
 
 def _dispara_stock_baixo(c, background_tasks: BackgroundTasks, autor_id: int, stock_antes: int) -> None:
-    """Dispara só na transição para abaixo do limiar, ou ao chegar a zero —
+    """Dispara só na transição para abaixo do limiar, ou ao chegar a zero:
     nunca a cada acção enquanto o stock já está baixo, senão repete-se até
     alguém repor."""
     limiar = int(db.get_config(c, "stock_baixo"))

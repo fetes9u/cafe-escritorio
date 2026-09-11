@@ -568,20 +568,21 @@ def obter_preferencias(u: dict = Depends(utilizador_actual)):
     return {evento: evento not in desligados for evento in EVENTOS}
 
 
-class Preferencias(BaseModel):
-    desligados: list[str] = Field(default_factory=list)
-
-
+# Same shape GET returns: {evento: ligado}. The client always sends the
+# full form state (every toggle, current checked value), so a missing key
+# is never ambiguous here, it simply never occurs in practice; if it did,
+# that event would be treated as ligado, matching the GET default.
 @app.put("/api/notificacoes/preferencias")
-def alterar_preferencias(body: Preferencias, u: dict = Depends(utilizador_actual)):
-    invalidos = sorted(set(body.desligados) - set(EVENTOS))
+def alterar_preferencias(body: dict[str, bool], u: dict = Depends(utilizador_actual)):
+    invalidos = sorted(set(body) - set(EVENTOS))
     if invalidos:
         raise HTTPException(400, f"Evento(s) desconhecido(s): {', '.join(invalidos)}.")
+    desligados = [evento for evento, ligado in body.items() if not ligado]
     with db.conn() as c:
         c.execute("DELETE FROM notificacoes_desligadas WHERE utilizador_id = ?", (u["id"],))
         c.executemany(
             "INSERT INTO notificacoes_desligadas (utilizador_id, evento) VALUES (?, ?)",
-            [(u["id"], evento) for evento in body.desligados],
+            [(u["id"], evento) for evento in desligados],
         )
     return {"ok": True}
 

@@ -119,7 +119,7 @@ def test_preferencias_por_omissao_tudo_ligado_e_pode_desligar(cliente):
     assert a.get("/api/notificacoes/preferencias").json() == {
         "cafe": True, "compra": True, "pagamento": True, "stock_baixo": True, "registo": True,
     }
-    r = a.put("/api/notificacoes/preferencias", json={"desligados": ["cafe", "registo"]})
+    r = a.put("/api/notificacoes/preferencias", json={"cafe": False, "registo": False})
     assert r.status_code == 200
     assert a.get("/api/notificacoes/preferencias").json() == {
         "cafe": False, "compra": True, "pagamento": True, "stock_baixo": True, "registo": False,
@@ -128,7 +128,7 @@ def test_preferencias_por_omissao_tudo_ligado_e_pode_desligar(cliente):
 
 def test_evento_desconhecido_nas_preferencias_e_rejeitado(cliente):
     a = regista(cliente, "Ana")
-    assert a.put("/api/notificacoes/preferencias", json={"desligados": ["nao_existe"]}).status_code == 400
+    assert a.put("/api/notificacoes/preferencias", json={"nao_existe": False}).status_code == 400
 
 
 # ---------- regras de destinatários ----------
@@ -139,7 +139,7 @@ def test_quem_desligou_um_evento_nao_e_destinatario_desse_evento(cliente, push_c
     m = regista(cliente, "Marta")
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
     m.post("/api/push/subscricoes", json={"endpoint": "https://push.example/marta", "p256dh": "p", "auth": "a"})
-    r.put("/api/notificacoes/preferencias", json={"desligados": ["cafe"]})
+    r.put("/api/notificacoes/preferencias", json={"cafe": False})
 
     assert a.post("/api/cafe").status_code == 201
 
@@ -198,7 +198,7 @@ def test_stock_baixo_dispara_na_transicao_e_nao_se_repete_ate_repor(cliente, pus
     a = regista(cliente, "Ana")
     r = regista(cliente, "Rui")
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
-    r.put("/api/notificacoes/preferencias", json={"desligados": ["cafe"]})
+    r.put("/api/notificacoes/preferencias", json={"cafe": False})
 
     assert a.post("/api/compras", json={"capsulas": 6}).status_code == 201
     assert a.put("/api/config", json={"stock_baixo": 3}).status_code == 200
@@ -218,7 +218,7 @@ def test_stock_baixo_nao_dispara_enquanto_se_mantem_acima_do_limiar(cliente, pus
     a = regista(cliente, "Ana")
     r = regista(cliente, "Rui")
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
-    r.put("/api/notificacoes/preferencias", json={"desligados": ["cafe"]})
+    r.put("/api/notificacoes/preferencias", json={"cafe": False})
 
     assert a.post("/api/compras", json={"capsulas": 20}).status_code == 201
     assert a.put("/api/config", json={"stock_baixo": 3}).status_code == 200

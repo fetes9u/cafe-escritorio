@@ -43,8 +43,10 @@ def test_service_worker_responds_200_with_js_content_type_at_root_scope(cliente)
     assert r.status_code == 200
     assert "javascript" in r.headers["content-type"]
     assert r.request.url.path == "/sw.js"
-    # proves the route serves the actual worker script, not just something JS shaped
-    assert r.text == (STATIC / "sw.js").read_text(encoding="utf-8")
+    # proves the route serves the actual worker script, not just something JS shaped.
+    # Compare bytes, not text: read_text() normalizes line endings while the HTTP body
+    # does not, so a CRLF checkout on Windows would fail this for the wrong reason.
+    assert r.content == (STATIC / "sw.js").read_bytes()
     assert 'addEventListener("fetch"' in r.text
 
 

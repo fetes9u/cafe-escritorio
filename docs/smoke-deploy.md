@@ -28,7 +28,11 @@ standard library. No extra dependency was added for it.
 1. The container starts and `GET /` answers 200.
 2. `GET /sw.js` and `GET /static/app.js` are byte identical to the files in the working tree.
    This catches an image built from a different tree than the one being tested, which is
-   invisible to every other check.
+   invisible to every other check. A mismatch is always a failure, but the message
+   distinguishes two causes, because the fix differs: the content really differs, or only the
+   line endings do (an image built from a Windows checkout that git had not renormalized, which
+   `.gitattributes` asks to be LF). The bytes are never normalized before comparing: doing that
+   to silence the second case would blind the check to the first.
 3. Register, log out, log in again, `POST /api/cafe`, then `GET /api/eu` and assert the coffee
    count actually moved to 1. The assertion is on the effect, not on the 201.
 4. `GET /api/push/chave` carries the field the client reads. The field name is extracted from
@@ -61,7 +65,18 @@ person makes on purpose and not a default.
 
 ## Proving the checks are load bearing
 
-A check that cannot fail is decoration. Steps 3, 4 and 6 were verified by breaking them on
+A check that cannot fail is decoration. Steps 2, 3, 4 and 6 were verified by breaking them on
 purpose and confirming the script exits non-zero naming what broke: a coffee count that cannot
 happen, a client field name that does not exist in the response, a field the payload does not
-carry, and a field present but empty. Worth repeating after any change to the script.
+carry, a field present but empty, and both diagnoses of an asset mismatch. Worth repeating after
+any change to the script.
+
+## Known limits, so nobody mistakes them for tested ground
+
+Verified by running: the happy path against a matching image, and the failure paths above.
+Not exercised yet, and therefore not proven: the Ctrl-C and SIGTERM cleanup handlers (cleanup is
+proven on the normal and failed-step paths only), the `--pull` branch and digest references, hosts
+where `host.docker.internal` is not provided by Docker Desktop, and `--allow-skips`. That last one
+is a no-op today: every step turned out to be implementable honestly, so nothing raises a skip and
+the flag has never changed an outcome. It is scaffolding for a future check that cannot be done
+honestly, not a tested escape hatch.

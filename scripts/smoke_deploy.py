@@ -390,6 +390,39 @@ def step_1_starts(rep: Report, box: Container) -> None:
     )
 
 
+def _line_endings(raw: bytes) -> str:
+    crlf = raw.count(b"\r\n")
+    lf = raw.count(b"\n") - crlf
+    if crlf and lf:
+        return f"mixed ({crlf} CRLF, {lf} LF)"
+    return "CRLF" if crlf else "LF"
+
+
+def _asset_mismatch(url_path: str, local: Path, served: bytes, on_disk: bytes) -> str:
+    """Both causes of a mismatch are real failures, but they are different
+    failures and the fix is different, so say which one this is. Calling a line
+    ending artifact "the image was built from a different tree" is a false
+    accusation, and a gate that cries wolf is a gate somebody switches off."""
+    head = (
+        f"{url_path} served by the image differs from {local}: "
+        f"{len(served)} bytes served ({_line_endings(served)}) vs "
+        f"{len(on_disk)} bytes on disk ({_line_endings(on_disk)}). "
+    )
+    if served.replace(b"\r\n", b"\n") == on_disk.replace(b"\r\n", b"\n"):
+        return head + (
+            "The text is identical and only the line endings differ. The image was built from a "
+            "Windows checkout that git had not yet renormalized (.gitattributes asks for eol=lf). "
+            "This is still a failure: the image does not carry the bytes this tree would deploy. "
+            "Rebuild the image from a renormalized checkout rather than relaxing this check, "
+            "because relaxing it also blinds the check to a genuinely different tree."
+        )
+    return head + (
+        "The content itself differs, not just the line endings. The image was built from a "
+        "different tree than the one being tested, so nothing else this script checks is about "
+        "the code you are looking at."
+    )
+
+
 def step_2_assets(rep: Report, box: Container) -> None:
     rep.start("Step 2: served sw.js and app.js are byte identical to the working tree")
     for url_path, local in (("/sw.js", SW_JS), ("/static/app.js", APP_JS)):
@@ -398,12 +431,7 @@ def step_2_assets(rep: Report, box: Container) -> None:
             raise SmokeFailure(f"GET {url_path} answered {resp.status_code}, expected 200")
         served, on_disk = resp.content, local.read_bytes()
         if served != on_disk:
-            raise SmokeFailure(
-                f"{url_path} served by the image differs from {local}: "
-                f"{len(served)} bytes served vs {len(on_disk)} on disk. The image was built "
-                "from a different tree than the one being tested, so nothing else this "
-                "script checks is about the code you are looking at."
-            )
+            raise SmokeFailure(_asset_mismatch(url_path, local, served, on_disk))
         rep.passed(f"{url_path} matches {local.relative_to(ROOT)} exactly ({len(served)} bytes)")
 
 

@@ -36,6 +36,18 @@ def test_estimativa_com_historico():
     assert logic.estimativa_mes(18, date(2026, 9, 11), "2026-09", 0.5) == 44
 
 
+def test_estimativa_pessoa_registada_a_meio_do_mes():
+    # registou-se dia 21 (seg); até dia 25 (sex) são 5 dias úteis; 10 cafés → 2/dia; faltam 3 → 16
+    assert logic.estimativa_mes(10, date(2026, 9, 25), "2026-09", 0.5, date(2026, 9, 21)) == 16
+    # registo em mês anterior não altera nada
+    assert logic.dias_decorridos("2026-09", date(2026, 9, 11), date(2026, 8, 3)) == 9
+
+
+def test_arredonda_meio_sobe():
+    assert logic.arredonda(4.5) == 5
+    assert logic.arredonda(4.4) == 4
+
+
 def test_estimativa_ultimo_dia():
     assert logic.estimativa_mes(30, date(2026, 9, 30), "2026-09", 2) == 30
 

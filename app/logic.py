@@ -50,12 +50,26 @@ def ritmo_diario(cafes: int, dias_decorridos: int, cafes_dia_declarado: float) -
     return cafes_dia_declarado
 
 
-def estimativa_mes(cafes: int, hoje: date, mes: str, cafes_dia_declarado: float) -> int:
+def dias_decorridos(mes: str, hoje: date, registado_em: date | None = None) -> int:
+    """Dias úteis desde o dia 1 do mês — ou desde o registo da pessoa, se foi mais tarde — até hoje."""
+    inicio, _ = limites_mes(mes)
+    if registado_em and registado_em > inicio:
+        inicio = registado_em
+    return dias_uteis(inicio, hoje)
+
+
+def arredonda(x: float) -> int:
+    """Ao inteiro mais próximo, 0,5 sobe (o round() do Python vai ao par)."""
+    return int(x + 0.5)
+
+
+def estimativa_mes(cafes: int, hoje: date, mes: str, cafes_dia_declarado: float,
+                   registado_em: date | None = None) -> int:
     """Cafés previstos até ao fim do mês: os já bebidos + ritmo × dias úteis que faltam."""
-    inicio, fim = limites_mes(mes)
-    decorridos = dias_uteis(inicio, hoje)
+    _, fim = limites_mes(mes)
+    decorridos = dias_decorridos(mes, hoje, registado_em)
     restantes = dias_uteis(hoje + timedelta(days=1), fim)
-    return round(cafes + ritmo_diario(cafes, decorridos, cafes_dia_declarado) * restantes)
+    return arredonda(cafes + ritmo_diario(cafes, decorridos, cafes_dia_declarado) * restantes)
 
 
 def data_fim_stock(stock: int, ritmo_escritorio: float, hoje: date) -> date | None:

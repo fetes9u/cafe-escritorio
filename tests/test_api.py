@@ -1,3 +1,5 @@
+from app import db, logic
+from app import main as app_main
 from tests.conftest import regista
 
 
@@ -274,3 +276,44 @@ def test_em_em_mes_ja_pago_usa_agora(cliente, relogio):
     assert r.json()["em"] == "2026-09-03T09:00:00+00:00"
     linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
     assert linha["Ana"]["cafes"] == 1  # o café novo não entrou no mês já pago
+
+
+def test_corrida_entre_select_e_insert_do_cliente_id_devolve_duplicado(cliente, monkeypatch):
+    """Duas requisições com o mesmo cliente_id podem intercalar-se entre o
+    SELECT que a deteção de duplicado faz e o INSERT que grava: uma ligação
+    instável que retransmite um café cujo primeiro pedido ainda está em voo é
+    exactamente o caso que a idempotência existe para cobrir. Isto força a
+    corrida de forma determinística ao fazer _aceita_em (chamada depois do
+    SELECT e antes do INSERT) inserir a linha concorrente a meio, para que o
+    INSERT de marcar_cafe perca a corrida e tenha de recuperar em vez de
+    devolver 500."""
+    a = regista(cliente, "Ana")
+    cliente_id = "corrida-1"
+
+    original = app_main._aceita_em
+    inserida = {"feito": False}
+
+    def _aceita_em_que_insere_a_meio(c, em_bruto, agora, pagador_id):
+        em = original(c, em_bruto, agora, pagador_id)
+        if not inserida["feito"]:
+            inserida["feito"] = True
+            # simula outra ligação a ganhar a corrida e a inserir primeiro
+            c.execute(
+                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id) VALUES (?, ?, ?, ?)",
+                (pagador_id, em.isoformat(), logic.mes_de(em), cliente_id),
+            )
+        return em
+
+    monkeypatch.setattr(app_main, "_aceita_em", _aceita_em_que_insere_a_meio)
+    r = a.post("/api/cafe", json={"cliente_id": cliente_id})
+
+    assert r.status_code == 200, r.text
+    corpo = r.json()
+    assert corpo["duplicado"] is True
+    assert corpo["cliente_id"] == cliente_id
+
+    with db.conn() as c:
+        n = c.execute(
+            "SELECT COUNT(*) AS n FROM cafes WHERE cliente_id = ?", (cliente_id,)
+        ).fetchone()["n"]
+    assert n == 1

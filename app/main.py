@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -398,10 +399,26 @@ def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_
                 })
         em = _aceita_em(c, body.em if body else None, agora, u["id"])
         stock_antes = _stock(c)
-        c.execute(
-            "INSERT INTO cafes (utilizador_id, em, mes, cliente_id) VALUES (?, ?, ?, ?)",
-            (u["id"], em.isoformat(), logic.mes_de(em), cliente_id),
-        )
+        try:
+            c.execute(
+                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id) VALUES (?, ?, ?, ?)",
+                (u["id"], em.isoformat(), logic.mes_de(em), cliente_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            # Duas requisições com o mesmo cliente_id podem intercalar-se entre
+            # o SELECT de deteção acima e este INSERT (retry de uma ligação
+            # instável, exactamente o caso que a idempotência existe para
+            # cobrir). Quem perde a corrida do INSERT lê a linha que a outra
+            # gravou e devolve o mesmo 200/duplicado, nunca um 500. Qualquer
+            # outra violação de integridade continua a propagar-se.
+            if cliente_id and "cafes.cliente_id" in str(exc):
+                existente = c.execute(
+                    "SELECT em FROM cafes WHERE cliente_id = ?", (cliente_id,)
+                ).fetchone()
+                return JSONResponse(status_code=200, content={
+                    "ok": True, "cliente_id": cliente_id, "em": existente["em"], "duplicado": True,
+                })
+            raise
         _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
     if agora - em <= ATRASO_SEM_NOTIFICAR:
         _avisar(background_tasks, "cafe", f"{u['nome']} bebeu um café", u["id"])

@@ -60,7 +60,9 @@
 
 <!-- CAFÉ -->
 <section id="vista-cafe" hidden>
+  <p id="fotografia-aviso" class="nota aviso-fotografia" hidden></p>
   <button id="btn-cafe" class="grande">Bebi um café ☕</button>
+  <p id="fila-aviso" class="nota aviso-fila" hidden></p>
   <div id="stock" class="faixa"></div>
 
   <div class="cartao">
@@ -75,7 +77,8 @@
   </div>
 
   <footer class="rodape">
-    <button id="btn-desfazer" class="ligacao">Apagar o último café</button> ·
+    <button id="btn-desfazer" class="ligacao">Apagar o último café</button>
+    <span id="desfazer-razao" class="nota" hidden></span> ·
     <button id="btn-pin" class="ligacao">Mudar PIN</button> ·
     <button id="btn-sair" class="ligacao">Sair</button>
   </footer>
@@ -83,6 +86,7 @@
 
 <!-- ESCRITÓRIO -->
 <section id="vista-escritorio" hidden>
+  <p id="esc-fotografia-aviso" class="nota aviso-fotografia" hidden></p>
   <div class="linha">
     <label>Mês <select id="sel-mes"></select></label>
     <b id="esc-total"></b>

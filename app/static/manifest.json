@@ -1,0 +1,9 @@
+{
+  "name": "Café do escritório",
+  "short_name": "Café",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f1ea",
+  "theme_color": "#5b3a29",
+  "icons": [{ "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

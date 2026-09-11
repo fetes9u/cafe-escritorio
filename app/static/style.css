@@ -1,0 +1,70 @@
+:root {
+  --cafe: #5b3a29;
+  --cafe-claro: #8a5a3c;
+  --creme: #f7f1ea;
+  --texto: #2b2320;
+  --cinza: #7a716c;
+  --linha: #e6dcd2;
+  --ok: #2f7d4a;
+  --aviso-fundo: #fbe4e1;
+  --aviso: #a3261b;
+  --ok-fundo: #e3f2e7;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--creme); color: var(--texto);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+header { background: var(--cafe); color: #fff; padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top)); }
+h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+nav { display: flex; gap: 6px; margin-top: 10px; }
+nav button { flex: 1; padding: 8px; border: 0; border-radius: 8px; background: rgba(255,255,255,.15); color: #fff; font-size: 1rem; }
+nav button.activa { background: #fff; color: var(--cafe); font-weight: 600; }
+main { max-width: 520px; margin: 0 auto; padding: 16px; padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+
+.intro { font-size: 1.1rem; margin: 4px 0 12px; }
+.grelha { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.grelha button { padding: 18px 8px; font-size: 1.05rem; border: 1px solid var(--linha); border-radius: 12px; background: #fff; color: var(--texto); }
+.grelha button:active { background: var(--linha); }
+
+button { font: inherit; cursor: pointer; }
+button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button) {
+  background: var(--cafe); color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; }
+button:disabled { opacity: .5; }
+.secundario { display: block; width: 100%; margin-top: 16px; padding: 12px; background: transparent; color: var(--cafe); border: 1px dashed var(--cafe-claro); border-radius: 12px; }
+.ligacao { background: none; border: 0; padding: 0; color: var(--cafe-claro); text-decoration: underline; font-size: .95rem; }
+.grande { display: block; width: 100%; padding: 34px 16px; font-size: 1.5rem; font-weight: 600; border-radius: 16px;
+  box-shadow: 0 4px 0 #3e2619; margin-bottom: 14px; }
+.grande:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 2px 0 #3e2619; }
+
+input, select { font: inherit; padding: 10px; border: 1px solid var(--linha); border-radius: 8px; background: #fff; width: 100%; }
+label { display: block; margin: 10px 0; }
+label > input, label > select { margin-top: 4px; }
+.pin { font-size: 2rem; letter-spacing: .6em; text-align: center; padding: 14px; }
+#filtro { margin-bottom: 10px; }
+form .ligacao { margin-top: 10px; }
+
+.cartao { background: #fff; border: 1px solid var(--linha); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+.linha { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
+.linha label { flex: 1; margin: 0; }
+.nota { color: var(--cinza); font-size: .9rem; }
+.faixa { padding: 12px 14px; border-radius: 12px; background: var(--ok-fundo); color: var(--ok); margin: 12px 0; }
+.faixa.baixo { background: var(--aviso-fundo); color: var(--aviso); font-weight: 600; }
+.faixa small { display: block; font-weight: 400; opacity: .85; }
+.rodape { text-align: center; margin-top: 24px; color: var(--cinza); }
+
+table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; margin-top: 10px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--linha); font-size: .95rem; }
+th { color: var(--cinza); font-weight: 500; }
+.num { text-align: right; white-space: nowrap; }
+td .ligacao { font-size: .85rem; }
+.pago { color: var(--ok); }
+.porpagar { color: var(--aviso); }
+details summary { font-weight: 600; cursor: pointer; }
+ul { list-style: none; padding: 0; margin: 8px 0 0; }
+li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--linha); font-size: .95rem; }
+#form-compra input { flex: 1; min-width: 90px; }
+#form-config { flex-direction: column; align-items: stretch; }
+
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--texto); color: #fff;
+  padding: 10px 16px; border-radius: 10px; max-width: 90%; box-shadow: 0 4px 14px rgba(0,0,0,.25); z-index: 9; }
+#toast.erro { background: var(--aviso); }

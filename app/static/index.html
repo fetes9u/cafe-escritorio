@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Café do escritório</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Café">
+<meta name="theme-color" content="#5b3a29">
+</head>
+<body>
+
+<header>
+  <h1>☕ Café do escritório</h1>
+  <nav id="abas" hidden>
+    <button data-vista="cafe" class="activa">Café</button>
+    <button data-vista="escritorio">Escritório</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ENTRADA -->
+<section id="vista-entrada">
+  <div id="passo-nomes">
+    <p class="intro">Quem és?</p>
+    <input id="filtro" type="search" placeholder="Filtrar nomes…" hidden>
+    <div id="nomes" class="grelha"></div>
+    <button id="btn-novo" class="secundario">Sou novo · criar conta</button>
+  </div>
+
+  <form id="form-pin" hidden>
+    <p class="intro">Olá, <b id="pin-nome"></b>. O teu PIN:</p>
+    <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" class="pin">
+    <button type="button" id="pin-voltar" class="ligacao">Não sou eu</button>
+  </form>
+
+  <form id="form-registo" hidden>
+    <p class="intro">Criar conta</p>
+    <label>Nome <input id="reg-nome" maxlength="40" required autocomplete="off"></label>
+    <label>PIN (4 dígitos) <input id="reg-pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required></label>
+    <label>Repete o PIN <input id="reg-pin2" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" required></label>
+    <label>Quantos cafés bebes por dia, mais ou menos?
+      <select id="reg-cafes">
+        <option value="0.5">menos de 1</option>
+        <option value="1" selected>1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4 ou mais</option>
+      </select>
+    </label>
+    <button type="submit">Criar conta</button>
+    <button type="button" id="reg-cancelar" class="ligacao">Cancelar</button>
+  </form>
+</section>
+
+<!-- CAFÉ -->
+<section id="vista-cafe" hidden>
+  <button id="btn-cafe" class="grande">Bebi um café ☕</button>
+  <div id="stock" class="faixa"></div>
+
+  <div class="cartao">
+    <div class="linha"><span>Este mês</span><b id="mes-cafes"></b></div>
+    <div class="linha"><span>Estimativa até ao fim do mês</span><b id="mes-est"></b></div>
+    <div class="linha nota"><span>A tua previsão</span><span><b id="prev"></b> <button id="btn-prev" class="ligacao">alterar</button></span></div>
+  </div>
+
+  <div class="cartao">
+    <div class="linha"><span>Mês anterior (<span id="ant-mes"></span>)</span><b id="ant-valor"></b></div>
+    <div id="ant-estado" class="nota"></div>
+  </div>
+
+  <footer class="rodape">
+    <button id="btn-desfazer" class="ligacao">Apagar o último café</button> ·
+    <button id="btn-pin" class="ligacao">Mudar PIN</button> ·
+    <button id="btn-sair" class="ligacao">Sair</button>
+  </footer>
+</section>
+
+<!-- ESCRITÓRIO -->
+<section id="vista-escritorio" hidden>
+  <div class="linha">
+    <label>Mês <select id="sel-mes"></select></label>
+    <b id="esc-total"></b>
+  </div>
+
+  <table id="tabela">
+    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">€</th><th>Estado</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p id="esc-ajuda" class="nota"></p>
+
+  <div id="esc-stock" class="faixa"></div>
+
+  <details class="cartao" open>
+    <summary>Entradas de cápsulas</summary>
+    <form id="form-compra" class="linha">
+      <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="cápsulas" required>
+      <input id="compra-nota" maxlength="80" placeholder="nota (opcional)">
+      <button type="submit">Registar entrada</button>
+    </form>
+    <ul id="compras"></ul>
+  </details>
+
+  <details class="cartao">
+    <summary>Definições</summary>
+    <form id="form-config" class="linha">
+      <label>Preço por cápsula (€) <input id="cfg-preco" type="number" step="0.01" min="0.01" required></label>
+      <label>Aviso de stock baixo (cápsulas) <input id="cfg-limiar" type="number" min="0" required></label>
+      <button type="submit">Guardar</button>
+    </form>
+    <p class="nota">O preço que conta é o do momento em que se marca o pagamento; mudar o preço afecta os meses ainda não pagos.</p>
+  </details>
+</section>
+
+</main>
+
+<div id="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

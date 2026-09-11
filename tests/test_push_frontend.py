@@ -124,3 +124,69 @@ def test_settings_screen_text_is_portuguese():
     section = html[start:end]
     assert "Notificações" in section
     assert "notification" not in section.lower()
+
+
+# ---------- notification settings live in the office tab ----------
+
+def _view_slice(html, view_id):
+    """Returns the markup of a top-level <section id="view_id">...</section>,
+    the same style tests/test_pwa.py already uses for handler blocks."""
+    start = html.index(f'id="{view_id}"')
+    end = html.index("</section>", start)
+    return html[start:end]
+
+
+def test_notif_settings_live_in_the_office_view_not_the_cafe_view():
+    """People look for notification settings next to the other app settings
+    (capsule price, stock threshold), which are on the office tab."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    escritorio = _view_slice(html, "vista-escritorio")
+    cafe = _view_slice(html, "vista-cafe")
+    assert 'id="notif-secao"' in escritorio
+    assert 'id="notif-secao"' not in cafe
+
+
+def test_notif_settings_are_open_by_default():
+    """Everyone receives everything by default; turning notifications off has
+    to be visible, not hidden behind a closed accordion."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    start = html.index('id="notif-secao"')
+    end = html.index(">", start)
+    tag = html[start:end]
+    assert "open" in tag
+
+
+# ---------- errors on the notifications path are surfaced, not swallowed ----------
+
+def test_app_never_swallows_an_error_on_the_notifications_path():
+    """A bare `catch {` (or `catch{`) discards the exception: nothing reaches
+    the console, nothing reaches the user. Regression for a real report where
+    a user clicked "Receber notificacoes", the browser refused, and there was
+    no way to tell why."""
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    marker = "// ---------- notificações push ----------"
+    assert marker in js
+    notif_js = js[js.index(marker):]
+    assert "catch {" not in notif_js
+    assert "catch{" not in notif_js
+
+
+def test_app_logs_notification_errors_to_the_console():
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    marker = "// ---------- notificações push ----------"
+    notif_js = js[js.index(marker):]
+    assert "console.error" in notif_js
+
+
+def test_activate_notifications_handler_reports_the_real_error_to_the_user():
+    """The toast shown to the user must include the caught error's name and
+    message, e.g. "NotAllowedError, registration failed", not a generic
+    apology with no diagnostic value."""
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    handler_start = js.index('$("btn-notif-ativar").onclick')
+    handler_end = js.index("\n};", handler_start)
+    handler = js[handler_start:handler_end]
+    assert "catch (erro)" in handler
+    assert "console.error" in handler
+    assert "erro.name" in handler or "explicarErroNotif" in handler
+    assert "erro.message" in handler or "explicarErroNotif" in handler

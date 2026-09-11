@@ -121,7 +121,7 @@ async function entrar() {
   eu = await api("GET", "/eu");
   desenharEu();
   mostrar("cafe");
-  atualizarEstadoNotif().catch(() => {});
+  atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));
 }
 
 function textoStock(s) {
@@ -314,7 +314,11 @@ $("abas").onclick = async (ev) => {
   if (!b) return;
   try {
     if (b.dataset.vista === "cafe") await entrar();
-    else { await carregarEscritorio(); mostrar("escritorio"); }
+    else {
+      await carregarEscritorio();
+      mostrar("escritorio");
+      atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));
+    }
   } catch (e) { toast(e.message, true); }
 };
 
@@ -429,7 +433,10 @@ async function carregarPreferenciasNotif() {
     for (const chk of $("form-notif-prefs").querySelectorAll("input[data-evento]")) {
       chk.checked = prefs[chk.dataset.evento] !== false;
     }
-  } catch { /* falha a ler: mantém os interruptores no estado por omissão (tudo ligado) */ }
+  } catch (erro) {
+    console.error("Falha ao ler preferências de notificações:", erro);
+    // mantém os interruptores no estado por omissão (tudo ligado)
+  }
 }
 
 // Chamado depois de entrar, e outra vez depois de qualquer ação de notificações,
@@ -453,7 +460,8 @@ async function atualizarEstadoNotif() {
   let resp;
   try {
     resp = await fetch("/api/push/chave");
-  } catch {
+  } catch (erro) {
+    console.error("Falha ao verificar o estado das notificações:", erro);
     estado.textContent = "Não foi possível verificar as notificações.";
     esconderTudoNotif();
     return;
@@ -498,6 +506,18 @@ async function atualizarEstadoNotif() {
   }
 }
 
+// Erros de pushManager.subscribe()/getSubscription() distinguem-se pelo "name"
+// (NotAllowedError, InvalidStateError, AbortError, NotSupportedError); sem ele
+// não há como diagnosticar à distância porque não temos acesso ao dispositivo.
+function explicarErroNotif(erro) {
+  const nome = erro && erro.name ? erro.name : "Erro";
+  const mensagem = erro && erro.message ? erro.message : String(erro);
+  let dica = "";
+  if (nome === "AbortError") dica = " (costuma ser falha a contactar o serviço de push)";
+  else if (nome === "InvalidStateError") dica = " (costuma ser uma subscrição anterior com outra chave; cancela a subscrição e volta a ligar)";
+  return `${nome}, ${mensagem}${dica}`;
+}
+
 // Só pedimos permissão a partir daqui, num clique explícito: nunca ao carregar
 // a página (falha sempre em iOS e, em Android, gasta o pedido sem contexto).
 $("btn-notif-ativar").onclick = async () => {
@@ -521,8 +541,9 @@ $("btn-notif-ativar").onclick = async () => {
       dispositivo: navigator.userAgent.slice(0, 120),
     });
     toast("Notificações ligadas.");
-  } catch {
-    toast("Não foi possível ligar as notificações.", true);
+  } catch (erro) {
+    console.error("Falha ao ligar notificações:", erro);
+    toast(`Não foi possível ligar as notificações: ${explicarErroNotif(erro)}`, true);
   } finally {
     await atualizarEstadoNotif();
   }
@@ -531,12 +552,14 @@ $("btn-notif-ativar").onclick = async () => {
 $("btn-notif-cancelar").onclick = async () => {
   try {
     if (subscricaoAtual) {
-      await api("DELETE", "/push/subscricoes", { endpoint: subscricaoAtual.endpoint }).catch(() => {});
+      await api("DELETE", "/push/subscricoes", { endpoint: subscricaoAtual.endpoint })
+        .catch((erro) => console.error("Falha ao cancelar subscrição no servidor:", erro));
       await subscricaoAtual.unsubscribe();
     }
     toast("Subscrição cancelada neste dispositivo.");
-  } catch {
-    toast("Não foi possível cancelar a subscrição.", true);
+  } catch (erro) {
+    console.error("Falha ao cancelar subscrição de notificações:", erro);
+    toast(`Não foi possível cancelar a subscrição: ${explicarErroNotif(erro)}`, true);
   } finally {
     await atualizarEstadoNotif();
   }

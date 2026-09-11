@@ -1,7 +1,9 @@
 {
   "name": "Café do escritório",
   "short_name": "Café",
+  "description": "Regista e acompanha os cafés do escritório, com notificações e acesso rápido a partir do ecrã inicial.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f7f1ea",
   "theme_color": "#5b3a29",

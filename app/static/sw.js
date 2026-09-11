@@ -5,7 +5,7 @@
    API response could show one person the data of another. */
 "use strict";
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const CACHE_NAME = "cafe-shell-" + CACHE_VERSION;
 
 const SHELL_URLS = [
@@ -43,19 +43,19 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api")) return;
   if (event.request.method !== "GET") return;
 
+  // Network-first: the LAN is fast and is the source of truth, so a fresh
+  // deploy is visible immediately. The cache only kicks in when the network
+  // request fails, so the app still works offline.
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((resp) => {
-          if (resp.ok) {
-            const copy = resp.clone();
-            caches.open(CACHE_NAME).then((c) => c.put(event.request, copy));
-          }
-          return resp;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request)
+      .then((resp) => {
+        if (resp.ok) {
+          const copy = resp.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(event.request, copy));
+        }
+        return resp;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
 

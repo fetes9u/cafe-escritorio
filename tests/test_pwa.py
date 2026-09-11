@@ -72,3 +72,33 @@ def test_every_precached_shell_url_actually_resolves(cliente):
     for url in urls:
         r = cliente.get(url)
         assert r.status_code == 200, f"precached URL does not resolve: {url}"
+
+
+def test_service_worker_does_not_serve_the_shell_cache_first():
+    """The whole shell (including '/', so index.html) must never be answered
+    straight from the cache without asking the network first: a stale cached
+    '/' is exactly how a deployed UI change (e.g. a new settings screen)
+    stops showing up for someone who already has the service worker installed."""
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
+    assert "cached || network" not in text
+
+
+def test_service_worker_keeps_the_required_handlers_and_api_guard():
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
+    assert 'pathname.startsWith("/api")' in text
+    for handler in ("push", "notificationclick", "fetch", "install", "activate"):
+        assert f'addEventListener("{handler}"' in text
+
+
+def test_cache_version_was_bumped_past_v1():
+    """A cache name that never changes means activate() never evicts the
+    previous deploy's cache, since it only deletes caches with a different
+    name than the current one."""
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
+    assert 'CACHE_VERSION = "v1"' not in text
+
+
+def test_manifest_has_description_and_scope():
+    manifest = json.loads((STATIC / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest.get("description")
+    assert manifest.get("scope") == "/"

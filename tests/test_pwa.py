@@ -1,7 +1,15 @@
 """Tests for the PWA shell: manifest icons and the service worker route."""
 import json
+import re
 
 from app.main import STATIC
+
+
+def _precache_list():
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
+    start = text.index("SHELL_URLS = [") + len("SHELL_URLS = [")
+    end = text.index("]", start)
+    return text[start:end]
 
 
 def test_manifest_is_valid_json_with_icons_that_exist_on_disk():
@@ -35,6 +43,9 @@ def test_service_worker_responds_200_with_js_content_type_at_root_scope(cliente)
     assert r.status_code == 200
     assert "javascript" in r.headers["content-type"]
     assert r.request.url.path == "/sw.js"
+    # proves the route serves the actual worker script, not just something JS shaped
+    assert r.text == (STATIC / "sw.js").read_text(encoding="utf-8")
+    assert 'addEventListener("fetch"' in r.text
 
 
 def test_app_registers_the_root_scoped_service_worker():
@@ -43,10 +54,19 @@ def test_app_registers_the_root_scoped_service_worker():
 
 
 def test_service_worker_never_caches_the_api():
-    text = (STATIC / "sw.js").read_text(encoding="utf-8")
-    start = text.index("SHELL_URLS = [") + len("SHELL_URLS = [")
-    end = text.index("]", start)
-    precache_list = text[start:end]
+    precache_list = _precache_list()
     assert "/api" not in precache_list
     # runtime guard: any request under /api must never go through the cache
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
     assert 'pathname.startsWith("/api")' in text
+
+
+def test_every_precached_shell_url_actually_resolves(cliente):
+    """cache.addAll() is all-or-nothing: one 404 in SHELL_URLS makes install()
+    reject and the service worker never activates, silently. Guard every
+    entry so a renamed or removed static file gets caught here."""
+    urls = re.findall(r'"([^"]+)"', _precache_list())
+    assert urls  # sanity: the list itself was found and is not empty
+    for url in urls:
+        r = cliente.get(url)
+        assert r.status_code == 200, f"precached URL does not resolve: {url}"

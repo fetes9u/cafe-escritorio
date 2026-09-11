@@ -1,14 +1,18 @@
 """API do café do escritório. Uma app FastAPI que também serve o front-end estático."""
 import hashlib
+import json
+import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from py_vapid import Vapid
 from pydantic import BaseModel, Field
+from pywebpush import WebPushException, webpush
 
 from . import db, logic
 
@@ -17,6 +21,8 @@ BLOQUEIO = timedelta(seconds=60)
 COOKIE = "cafe_sessao"
 SESSAO_DIAS = 180
 STATIC = Path(__file__).parent / "static"
+
+EVENTOS = ("cafe", "compra", "pagamento", "stock_baixo", "registo")
 
 
 
@@ -105,7 +111,7 @@ def lista_utilizadores():
 
 
 @app.post("/api/registar", status_code=201)
-def registar(body: Registo, request: Request, resp: Response):
+def registar(body: Registo, request: Request, resp: Response, background_tasks: BackgroundTasks):
     _valida_pin(body.pin)
     nome = body.nome.strip()
     with db.conn() as c:
@@ -116,6 +122,7 @@ def registar(body: Registo, request: Request, resp: Response):
             (nome, _hash_pin(body.pin), body.cafes_dia, logic.agora().isoformat()),
         )
         _abre_sessao(c, cur.lastrowid, request, resp)
+    _avisar(background_tasks, "registo", f"{nome} juntou-se ao café", cur.lastrowid)
     return {"id": cur.lastrowid, "nome": nome}
 
 
@@ -191,6 +198,104 @@ def _pagamento(c, mes: str, pagador_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _euros(cent: int) -> str:
+    return f"{cent / 100:.2f}".replace(".", ",")
+
+
+# ---------- notificações push ----------
+#
+# As chaves VAPID vêm de variáveis de ambiente (nunca de código ou ficheiro):
+# CAFE_VAPID_PRIVATE é o escalar privado de 32 bytes em base64url sem padding
+# (43 caracteres, tudo numa linha, sem cabeçalhos PEM). CAFE_VAPID_PUBLIC é o
+# ponto público X9.62 descomprimido (65 bytes) na mesma codificação
+# (87 caracteres): é exactamente o valor devolvido por GET /api/push/chave e
+# o que o browser usa como applicationServerKey. Sem as três variáveis
+# (incluindo o contacto), a app arranca e funciona na mesma, sem push.
+
+def _vapid_configurado() -> bool:
+    return bool(
+        os.environ.get("CAFE_VAPID_PRIVATE")
+        and os.environ.get("CAFE_VAPID_PUBLIC")
+        and os.environ.get("CAFE_VAPID_CONTACTO")
+    )
+
+
+def _vapid_instance() -> Vapid:
+    """Reconstrói a chave EC a partir do escalar cru em base64url, em vez de
+    depender de um formato PEM (que a variável de ambiente não usa)."""
+    return Vapid.from_raw(os.environ["CAFE_VAPID_PRIVATE"].encode("ascii"))
+
+
+def _preferencias_desligadas(c, utilizador_id: int) -> set[str]:
+    rows = c.execute(
+        "SELECT evento FROM notificacoes_desligadas WHERE utilizador_id = ?", (utilizador_id,)
+    ).fetchall()
+    return {r["evento"] for r in rows}
+
+
+def _destinatarios_subscricoes(c, evento: str, autor_id: int) -> list[dict]:
+    """Subscrições de quem deve receber esta notificação: nunca o autor do
+    acto, nunca quem desligou este evento."""
+    rows = c.execute(
+        """
+        SELECT s.endpoint, s.p256dh, s.auth
+        FROM subscricoes s
+        WHERE s.utilizador_id != ?
+          AND NOT EXISTS (
+              SELECT 1 FROM notificacoes_desligadas d
+              WHERE d.utilizador_id = s.utilizador_id AND d.evento = ?
+          )
+        """,
+        (autor_id, evento),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _enviar_notificacao(evento: str, mensagem: str, autor_id: int) -> None:
+    """Corre em BackgroundTasks: nunca no caminho do pedido. Um push service
+    lento não pode atrasar a resposta à acção que o despoletou."""
+    if not _vapid_configurado():
+        return
+    with db.conn() as c:
+        destinatarios = _destinatarios_subscricoes(c, evento, autor_id)
+    if not destinatarios:
+        return
+    vv = _vapid_instance()
+    payload = json.dumps({"evento": evento, "mensagem": mensagem})
+    claims_base = {"sub": os.environ["CAFE_VAPID_CONTACTO"]}
+    for sub in destinatarios:
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                },
+                data=payload,
+                vapid_private_key=vv,
+                vapid_claims=dict(claims_base),
+            )
+        except WebPushException as exc:
+            if exc.status_code in (404, 410):
+                with db.conn() as c:
+                    c.execute("DELETE FROM subscricoes WHERE endpoint = ?", (sub["endpoint"],))
+
+
+def _avisar(background_tasks: BackgroundTasks, evento: str, mensagem: str, autor_id: int) -> None:
+    background_tasks.add_task(_enviar_notificacao, evento, mensagem, autor_id)
+
+
+def _dispara_stock_baixo(c, background_tasks: BackgroundTasks, autor_id: int, stock_antes: int) -> None:
+    """Dispara só na transição para abaixo do limiar, ou ao chegar a zero:
+    nunca a cada acção enquanto o stock já está baixo, senão repete-se até
+    alguém repor."""
+    limiar = int(db.get_config(c, "stock_baixo"))
+    stock_depois = _stock(c)
+    cruzou_o_limiar = stock_antes > limiar >= stock_depois
+    chegou_a_zero = stock_antes > 0 and stock_depois == 0
+    if cruzou_o_limiar or chegou_a_zero:
+        _avisar(background_tasks, "stock_baixo", f"Restam {stock_depois} cápsulas", autor_id)
+
+
 # ---------- a minha página ----------
 
 @app.get("/api/eu")
@@ -229,13 +334,16 @@ def eu(u: dict = Depends(utilizador_actual)):
 
 
 @app.post("/api/cafe", status_code=201)
-def marcar_cafe(u: dict = Depends(utilizador_actual)):
+def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     agora = logic.agora()
     with db.conn() as c:
+        stock_antes = _stock(c)
         c.execute(
             "INSERT INTO cafes (utilizador_id, em, mes) VALUES (?, ?, ?)",
             (u["id"], agora.isoformat(), logic.mes_de(agora)),
         )
+        _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
+    _avisar(background_tasks, "cafe", f"{u['nome']} bebeu um café", u["id"])
     return {"ok": True}
 
 
@@ -327,26 +435,29 @@ class Compra(BaseModel):
 
 
 @app.post("/api/compras", status_code=201)
-def registar_compra(body: Compra, u: dict = Depends(utilizador_actual)):
+def registar_compra(body: Compra, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
         c.execute(
             "INSERT INTO compras (utilizador_id, capsulas, em, nota) VALUES (?, ?, ?, ?)",
             (u["id"], body.capsulas, logic.agora().isoformat(), body.nota),
         )
+    _avisar(background_tasks, "compra", f"{u['nome']} repôs {body.capsulas} cápsulas", u["id"])
     return {"ok": True}
 
 
 @app.delete("/api/compras/{compra_id}")
-def apagar_compra(compra_id: int, u: dict = Depends(utilizador_actual)):
+def apagar_compra(compra_id: int, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
         compra = c.execute("SELECT * FROM compras WHERE id = ?", (compra_id,)).fetchone()
         if not compra:
             raise HTTPException(404, "Entrada não existe.")
         if compra["utilizador_id"] != u["id"]:
             raise HTTPException(403, "Só quem registou a entrada a pode apagar.")
-        if _stock(c) - compra["capsulas"] < 0:
+        stock_antes = _stock(c)
+        if stock_antes - compra["capsulas"] < 0:
             raise HTTPException(409, "Não se pode apagar: o stock ficaria negativo.")
         c.execute("DELETE FROM compras WHERE id = ?", (compra_id,))
+        _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
     return {"ok": True}
 
 
@@ -356,13 +467,14 @@ class Pagamento(BaseModel):
 
 
 @app.post("/api/pagamentos", status_code=201)
-def registar_pagamento(body: Pagamento, u: dict = Depends(utilizador_actual)):
+def registar_pagamento(body: Pagamento, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     """Quem está autenticado é quem recebeu o dinheiro."""
     mes_actual = logic.mes_de(logic.agora())
     if body.mes >= mes_actual:
         raise HTTPException(400, "Só se fecham meses já terminados.")
     with db.conn() as c:
-        if not c.execute("SELECT 1 FROM utilizadores WHERE id = ?", (body.pagador_id,)).fetchone():
+        pagador = c.execute("SELECT nome FROM utilizadores WHERE id = ?", (body.pagador_id,)).fetchone()
+        if not pagador:
             raise HTTPException(404, "Pagador não existe.")
         if _pagamento(c, body.mes, body.pagador_id):
             raise HTTPException(409, "Esse pagamento já está registado.")
@@ -372,7 +484,9 @@ def registar_pagamento(body: Pagamento, u: dict = Depends(utilizador_actual)):
             "INSERT INTO pagamentos (mes, pagador_id, recebedor_id, capsulas, valor_cent, em) VALUES (?, ?, ?, ?, ?, ?)",
             (body.mes, body.pagador_id, u["id"], n, n * preco, logic.agora().isoformat()),
         )
-    return {"ok": True, "capsulas": n, "valor_cent": n * preco}
+    valor_cent = n * preco
+    _avisar(background_tasks, "pagamento", f"{pagador['nome']} pagou {_euros(valor_cent)} EUR a {u['nome']}", u["id"])
+    return {"ok": True, "capsulas": n, "valor_cent": valor_cent}
 
 
 @app.delete("/api/pagamentos/{mes}/{pagador_id}")
@@ -400,6 +514,75 @@ def alterar_config(body: Config, u: dict = Depends(utilizador_actual)):
             db.set_config(c, "preco_cent", str(body.preco_cent))
         if body.stock_baixo is not None:
             db.set_config(c, "stock_baixo", str(body.stock_baixo))
+    return {"ok": True}
+
+
+# ---------- push e notificações ----------
+
+@app.get("/api/push/chave")
+def chave_push():
+    chave = os.environ.get("CAFE_VAPID_PUBLIC")
+    if not chave:
+        raise HTTPException(503, "As notificações push não estão configuradas neste servidor.")
+    return {"chave_publica": chave}
+
+
+class Subscricao(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+    dispositivo: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/api/push/subscricoes", status_code=201)
+def subscrever_push(body: Subscricao, u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO subscricoes (endpoint, utilizador_id, p256dh, auth, dispositivo, criado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET utilizador_id = excluded.utilizador_id, "
+            "p256dh = excluded.p256dh, auth = excluded.auth, dispositivo = excluded.dispositivo, "
+            "criado_em = excluded.criado_em",
+            (body.endpoint, u["id"], body.p256dh, body.auth, body.dispositivo, logic.agora().isoformat()),
+        )
+    return {"ok": True}
+
+
+class CancelarSubscricao(BaseModel):
+    endpoint: str
+
+
+@app.delete("/api/push/subscricoes")
+def cancelar_subscricao(body: CancelarSubscricao, u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        c.execute(
+            "DELETE FROM subscricoes WHERE endpoint = ? AND utilizador_id = ?", (body.endpoint, u["id"])
+        )
+    return {"ok": True}
+
+
+@app.get("/api/notificacoes/preferencias")
+def obter_preferencias(u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        desligados = _preferencias_desligadas(c, u["id"])
+    return {evento: evento not in desligados for evento in EVENTOS}
+
+
+class Preferencias(BaseModel):
+    desligados: list[str] = Field(default_factory=list)
+
+
+@app.put("/api/notificacoes/preferencias")
+def alterar_preferencias(body: Preferencias, u: dict = Depends(utilizador_actual)):
+    invalidos = sorted(set(body.desligados) - set(EVENTOS))
+    if invalidos:
+        raise HTTPException(400, f"Evento(s) desconhecido(s): {', '.join(invalidos)}.")
+    with db.conn() as c:
+        c.execute("DELETE FROM notificacoes_desligadas WHERE utilizador_id = ?", (u["id"],))
+        c.executemany(
+            "INSERT INTO notificacoes_desligadas (utilizador_id, evento) VALUES (?, ?)",
+            [(u["id"], evento) for evento in body.desligados],
+        )
     return {"ok": True}
 
 

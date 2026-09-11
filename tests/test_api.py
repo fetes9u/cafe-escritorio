@@ -208,3 +208,69 @@ def test_cafe_novo_nunca_cai_em_mes_pago(cliente, relogio):
     a.post("/api/cafe")
     linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
     assert linha["Ana"]["cafes"] == 3
+
+
+# ---------- sincronização offline (cliente_id / em) ----------
+
+def test_sem_corpo_continua_a_funcionar(cliente):
+    """Um cliente antigo em cache não manda corpo nenhum."""
+    a = regista(cliente, "Ana")
+    r = a.post("/api/cafe")
+    assert r.status_code == 201
+    corpo = r.json()
+    assert corpo["ok"] is True and corpo["cliente_id"] is None and corpo["duplicado"] is False
+    assert a.get("/api/eu").json()["cafes"] == 1
+
+
+def test_cliente_id_repetido_da_um_so_cafe(cliente):
+    a = regista(cliente, "Ana")
+    corpo = {"cliente_id": "9f1c0b3e-5a7d-4c2e-9b11-2a3f4d5e6c70", "em": "2026-09-11T09:03:12.000Z"}
+    r1 = a.post("/api/cafe", json=corpo)
+    assert r1.status_code == 201
+    d1 = r1.json()
+    assert d1["cliente_id"] == corpo["cliente_id"] and d1["duplicado"] is False
+    assert d1["em"] == "2026-09-11T09:03:12+00:00"
+
+    r2 = a.post("/api/cafe", json=corpo)
+    assert r2.status_code == 200
+    d2 = r2.json()
+    assert d2["cliente_id"] == corpo["cliente_id"] and d2["duplicado"] is True
+    assert d2["em"] == d1["em"]
+
+    assert a.get("/api/eu").json()["cafes"] == 1
+
+
+def test_em_fora_da_janela_usa_agora(cliente, relogio):
+    relogio.set(2026, 9, 11, 9, 0)
+    a = regista(cliente, "Ana")
+    r_passado = a.post("/api/cafe", json={"em": "2026-08-12T09:00:00.000Z"})  # 30 dias antes
+    assert r_passado.json()["em"] == "2026-09-11T09:00:00+00:00"
+    r_futuro = a.post("/api/cafe", json={"em": "2026-09-11T10:00:00.000Z"})  # 1h à frente
+    assert r_futuro.json()["em"] == "2026-09-11T09:00:00+00:00"
+
+
+def test_em_sem_fuso_ou_invalido_usa_agora_sem_rebentar(cliente, relogio):
+    relogio.set(2026, 9, 11, 9, 0)
+    a = regista(cliente, "Ana")
+    r_ingenuo = a.post("/api/cafe", json={"em": "2026-09-05T03:30:00"})  # sem fuso
+    assert r_ingenuo.status_code == 201
+    assert r_ingenuo.json()["em"] == "2026-09-11T09:00:00+00:00"
+    r_invalido = a.post("/api/cafe", json={"em": "isto-nao-e-uma-data"})
+    assert r_invalido.status_code == 201
+    assert r_invalido.json()["em"] == "2026-09-11T09:00:00+00:00"
+
+
+def test_em_em_mes_ja_pago_usa_agora(cliente, relogio):
+    relogio.set(2026, 8, 10, 9, 0)
+    a = regista(cliente, "Ana")
+    b = regista(cliente, "Bea")
+    a.post("/api/cafe")  # café real de Agosto
+    relogio.set(2026, 9, 1, 9, 0)
+    ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
+    b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]})
+    # 3 de Setembro: 28 de Agosto está dentro da janela dos 7 dias, mas cai num mês já pago
+    relogio.set(2026, 9, 3, 9, 0)
+    r = a.post("/api/cafe", json={"em": "2026-08-28T09:00:00.000Z"})
+    assert r.json()["em"] == "2026-09-03T09:00:00+00:00"
+    linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
+    assert linha["Ana"]["cafes"] == 1  # o café novo não entrou no mês já pago

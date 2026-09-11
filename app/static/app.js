@@ -47,7 +47,16 @@ async function api(metodo, rota, corpo) {
     erro.rede = true;
     throw erro;
   }
-  if (r.status === 401 && rota !== "/login") { carregarNomes().catch(() => {}); mostrar("entrada"); throw new Error("Sessão expirada. Entra outra vez."); }
+  if (r.status === 401 && rota !== "/login") {
+    // Session expired: not a decision to discard work, so the queue (fila) is
+    // left alone. But someone else's /api/escritorio snapshot has no reason
+    // to keep sitting on a shared device's disk after the session that
+    // fetched it is gone, so the instantaneos store is wiped here too.
+    idbLimpar("instantaneos").catch((erro) => console.error("Falha ao limpar fotografias após expirar a sessão:", erro));
+    carregarNomes().catch(() => {});
+    mostrar("entrada");
+    throw new Error("Sessão expirada. Entra outra vez.");
+  }
   const dados = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(dados.detail || `Erro ${r.status}`);
   return dados;
@@ -97,6 +106,10 @@ async function idbTodos(loja) {
 async function idbUm(loja, chave) {
   const db = await abrirDB();
   return idbPedido(db.transaction(loja, "readonly").objectStore(loja).get(chave));
+}
+async function idbLimpar(loja) {
+  const db = await abrirDB();
+  return idbPedido(db.transaction(loja, "readwrite").objectStore(loja).clear());
 }
 
 // Wipes the whole offline database. Called on logout: /api/escritorio holds
@@ -414,6 +427,21 @@ $("btn-pin").onclick = async () => {
 };
 
 $("btn-sair").onclick = async () => {
+  // Try to flush first: fila holds only this person's own queued coffees
+  // (not third-party data like instantaneos), so wiping it unread would
+  // throw away work the app exists to protect.
+  await sincronizarFila().catch((erro) => console.error("Falha ao sincronizar antes de sair:", erro));
+  let fila;
+  try { fila = await idbTodos("fila"); } catch { fila = []; }
+  if (fila.length) {
+    // Could not drain (no network): the queue cannot simply survive the
+    // logout either, since its record shape carries no user id and the
+    // next person to log in on this device would flush it under their own
+    // session. Name what is about to be lost and make it a real choice.
+    const mensagem = `Tens ${plural(fila.length, "café", "cafés")} por sincronizar. Se saíres agora, ${fila.length === 1 ? "perde-se." : "perdem-se."}`;
+    if (!confirm(mensagem)) return; // stays logged in, queue untouched
+  }
+
   await api("POST", "/logout").catch(() => {});
   eu = null;
   escritorio = null;

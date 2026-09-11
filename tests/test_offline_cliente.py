@@ -212,3 +212,49 @@ def test_logout_apaga_a_base_de_dados_offline():
     assert nome_m and nome_m.group(1) == "cafe-offline", (
         "apagarDB must delete the same 'cafe-offline' database the app opens"
     )
+
+
+def test_logout_nao_apaga_sem_esvaziar_a_fila_ou_confirmar():
+    """The wipe on logout is the one thing that can throw away a coffee no
+    one ever synced. It must only be reachable after the queue actually
+    drained, or after the person was told what they are about to lose and
+    said yes anyway."""
+    js = _app_js()
+    bloco = _handler(js, "btn-sair")
+
+    pos_sync = bloco.index("sincronizarFila")
+    pos_fila_check = bloco.index('idbTodos("fila")')
+    assert pos_sync < pos_fila_check, "logout must try to flush the queue before looking at what is left in it"
+
+    m = re.search(r"if\s*\(fila\.length\)\s*\{", bloco)
+    assert m, "logout must branch on whether the queue actually drained"
+    ramo_fila, fim_ramo = _bloco_balanceado(bloco, bloco.index("{", m.start()))
+
+    assert "por sincronizar" in ramo_fila, "the message shown must name what is queued, in Portuguese"
+    assert re.search(r"confirm\([^)]*\)", ramo_fila), "a queue that did not drain must be confirmed with the person"
+    assert re.search(r"if\s*\(!confirm\([^)]*\)\)\s*return", ramo_fila), (
+        "cancelling the confirmation must leave the session as is: no wipe, no logout"
+    )
+
+    pos_apagar = bloco.index("apagarDB()")
+    assert pos_apagar >= fim_ramo, (
+        "apagarDB() must sit after the whole confirm branch, never before the cancel check inside it, "
+        "or the confirmation could be bypassed"
+    )
+
+
+def test_sessao_expirada_limpa_fotografias_mas_nao_a_fila():
+    """An expired session is not a decision to discard work (item 1 governs
+    that), but /api/escritorio's snapshot is someone else's data and has no
+    reason to keep sitting on a shared device after their session ended."""
+    js = _app_js()
+    m = re.search(r'if\s*\(r\.status === 401[^)]*\)\s*\{', js)
+    assert m, "could not find the 401 branch in api()"
+    bloco_401, _ = _bloco_balanceado(js, js.index("{", m.start()))
+
+    assert re.search(r'idbLimpar\(\s*"instantaneos"\s*\)', bloco_401), (
+        "an expired session must clear the instantaneos snapshots"
+    )
+    assert '"fila"' not in bloco_401 and "'fila'" not in bloco_401, (
+        "an expired session must never touch the coffee queue: that is not a discard decision"
+    )

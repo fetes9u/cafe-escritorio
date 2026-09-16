@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from py_vapid import Vapid
@@ -323,7 +323,7 @@ def eu(u: dict = Depends(utilizador_actual)):
         cafes = _cafes_por_utilizador(c, mes).get(u["id"], 0)
         cafes_ant = _cafes_por_utilizador(c, anterior).get(u["id"], 0)
         ultimo = c.execute(
-            "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY id DESC LIMIT 1", (u["id"],)
+            "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY em DESC LIMIT 1", (u["id"],)
         ).fetchone()
         estimativa = logic.estimativa_mes(cafes, hoje, mes, u["cafes_dia"], _data_registo(u["criado_em"]))
         pag = _pagamento(c, anterior, u["id"])
@@ -346,6 +346,26 @@ def eu(u: dict = Depends(utilizador_actual)):
         },
         "stock": stock,
     }
+
+
+@app.get("/api/historico")
+def historico(mes: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+              u: dict = Depends(utilizador_actual)):
+    hoje = _hoje()
+    mes = mes or hoje.strftime("%Y-%m")
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT em FROM cafes WHERE utilizador_id = ? AND mes = ? ORDER BY em", (u["id"], mes)
+        ).fetchall()
+    por_dia: dict[str, list[str]] = {}
+    for r in rows:
+        dt = logic.local(datetime.fromisoformat(r["em"]))
+        por_dia.setdefault(dt.strftime("%Y-%m-%d"), []).append(dt.strftime("%H:%M"))
+    dias = [
+        {"dia": dia, "n": len(horas), "horas": horas}
+        for dia, horas in sorted(por_dia.items(), reverse=True)
+    ]
+    return {"mes": mes, "hoje": hoje.isoformat(), "dias": dias}
 
 
 class NovoCafe(BaseModel):

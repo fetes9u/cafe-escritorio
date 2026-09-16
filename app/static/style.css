@@ -27,7 +27,7 @@ main { max-width: 520px; margin: 0 auto; padding: 16px; padding-bottom: max(24px
 .grelha button:active { background: var(--linha); }
 
 button { font: inherit; cursor: pointer; }
-button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button) {
+button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia) {
   background: var(--cafe); color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; }
 button:disabled { opacity: .5; }
 .secundario { display: block; width: 100%; margin-top: 16px; padding: 12px; background: transparent; color: var(--cafe); border: 1px dashed var(--cafe-claro); border-radius: 12px; }
@@ -70,6 +70,25 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 #notif-secao .secundario { margin-top: 10px; }
 
 .aviso-fila { color: var(--cafe-claro); font-weight: 600; margin: 4px 0 14px; }
+#ultimo-cafe { margin: 0 0 12px; text-align: center; }
+
+/* histórico: cabeçalho do mês, calendário e faixa de detalhe, tudo a caber em 375x812 sem scroll */
+.hist-cabecalho { display: flex; justify-content: space-between; align-items: center; margin: 0 0 8px; }
+.hist-cabecalho .ligacao { font-size: 1.6rem; line-height: 1; padding: 4px 14px; text-decoration: none; }
+.hist-cabecalho .ligacao:disabled { opacity: .3; cursor: default; }
+.calendario { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.calendario .semana { text-align: center; font-size: .75rem; color: var(--cinza); }
+.dia { aspect-ratio: 1; display: flex; flex-direction: column; align-items: flex-start; padding: 3px 4px;
+  background: #fff; color: var(--texto); border: 1px solid var(--linha); border-radius: 8px; }
+.dia small { font-size: .65rem; line-height: 1; color: var(--cinza); }
+.dia .n { margin: auto; font-size: 1.15rem; line-height: 1; font-weight: 700; color: var(--cafe); }
+.dia.fds { background: var(--creme); }
+.dia.hoje { outline: 2px solid var(--cafe); outline-offset: -1px; }
+.dia.futuro { color: var(--cinza); cursor: default; }
+.dia.escolhido { background: var(--cafe); border-color: var(--cafe); color: #fff; }
+.dia.escolhido small, .dia.escolhido .n { color: #fff; }
+.dia.fila .n::after { content: "·"; margin-left: 1px; font-size: .8em; }
+#hist-detalhe { min-height: 3.2em; }
 .aviso-fotografia { background: var(--aviso-fundo); color: var(--aviso); padding: 8px 10px; border-radius: 8px; margin-bottom: 12px; }
 #desfazer-razao { display: block; margin-top: 4px; }
 

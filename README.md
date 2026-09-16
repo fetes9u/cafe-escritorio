@@ -9,7 +9,11 @@ café, de telemóvel, ao lado da máquina.
   estimativas fazerem sentido desde o primeiro dia.
 - **Café**: botão "Bebi um café"; total do mês em cápsulas e €; estimativa até ao fim
   do mês; stock, data prevista em que acaba, e aviso quando há ≤ 16 cápsulas (uma
-  caixa) ou quando não chega ao fim do mês.
+  caixa) ou quando não chega ao fim do mês. Por baixo do botão, "Último café: hoje
+  às 09:12", para acabar com o "já marquei o meu?".
+- **Histórico**: calendário do mês com os cafés de cada dia (só os próprios); tocar
+  num dia mostra as horas; setas para recuar nos meses. Cafés marcados sem rede
+  aparecem logo, com "(por sincronizar)".
 - **Escritório**: tabela do mês por pessoa (com histórico de meses), entradas de
   cápsulas, fecho de mês, preço por cápsula e limiar de aviso.
 

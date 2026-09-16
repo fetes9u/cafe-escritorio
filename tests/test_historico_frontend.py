@@ -138,6 +138,6 @@ def test_the_fields_the_client_reads_exist_in_the_real_responses(cliente):
 
 # ---------- service worker ----------
 
-def test_cache_version_is_v5():
+def test_cache_version_is_v6():
     text = (STATIC / "sw.js").read_text(encoding="utf-8")
-    assert 'CACHE_VERSION = "v5"' in text
+    assert 'CACHE_VERSION = "v6"' in text

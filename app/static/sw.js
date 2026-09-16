@@ -5,13 +5,13 @@
    API response could show one person the data of another. */
 "use strict";
 
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 const CACHE_NAME = "cafe-shell-" + CACHE_VERSION;
 
 const SHELL_URLS = [
   "/",
-  "/static/style.css",
-  "/static/app.js",
+  "/static/style.css?v=6",
+  "/static/app.js?v=6",
   "/static/manifest.json",
   "/static/icon.svg",
   "/static/icons/icon-180.png",
@@ -23,7 +23,10 @@ const SHELL_URLS = [
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(SHELL_URLS))
+      // { cache: "reload" } bypasses the browser HTTP cache for the precache
+      // fetch itself, otherwise install() could seed the new cache with the
+      // same stale response the HTTP cache is already holding.
+      .then((cache) => cache.addAll(SHELL_URLS.map((u) => new Request(u, { cache: "reload" }))))
       .then(() => self.skipWaiting())
   );
 });
@@ -45,9 +48,12 @@ self.addEventListener("fetch", (event) => {
 
   // Network-first: the LAN is fast and is the source of truth, so a fresh
   // deploy is visible immediately. The cache only kicks in when the network
-  // request fails, so the app still works offline.
+  // request fails, so the app still works offline. { cache: "no-cache" }
+  // also makes this bypass the browser's own HTTP cache, so the request
+  // always revalidates with the server (via ETag) instead of the browser
+  // silently answering from heuristic freshness before the SW even sees it.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "no-cache" })
       .then((resp) => {
         if (resp.ok) {
           const copy = resp.clone();

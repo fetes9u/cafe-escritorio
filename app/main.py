@@ -55,6 +55,10 @@ async def _cabecalhos(request: Request, call_next):
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:"
+    # "no-cache" still allows the cheap ETag revalidation round trip on our
+    # LAN; it only stops the browser from serving /static/app.js or
+    # style.css straight out of heuristic freshness after a deploy.
+    resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 

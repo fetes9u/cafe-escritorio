@@ -102,3 +102,65 @@ def test_manifest_has_description_and_scope():
     manifest = json.loads((STATIC / "manifest.json").read_text(encoding="utf-8"))
     assert manifest.get("description")
     assert manifest.get("scope") == "/"
+
+
+# ---------- cache busting the app shell after a deploy ----------
+
+def test_shell_asset_query_matches_the_cache_version_everywhere():
+    """The HTML's ?v= on style.css/app.js, SHELL_URLS' ?v= on the same two
+    files, and CACHE_VERSION must all move together: bumping one without the
+    others is exactly how a browser keeps an old app.js after a deploy."""
+    sw = (STATIC / "sw.js").read_text(encoding="utf-8")
+    m = re.search(r'CACHE_VERSION\s*=\s*"v(\d+)"', sw)
+    assert m, "could not find CACHE_VERSION in sw.js"
+    n = m.group(1)
+
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert f'href="/static/style.css?v={n}"' in html
+    assert f'src="/static/app.js?v={n}"' in html
+
+    precache_list = _precache_list()
+    assert f'/static/style.css?v={n}' in precache_list
+    assert f'/static/app.js?v={n}' in precache_list
+
+
+def test_install_precaches_bypassing_the_http_cache():
+    """cache.addAll(SHELL_URLS) alone can precache whatever the browser's own
+    HTTP cache is already holding, stale copy included. Wrapping each URL in
+    a Request with { cache: "reload" } forces a real network fetch."""
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
+    install_start = text.index('addEventListener("install"')
+    install_end = text.index('addEventListener("activate"')
+    install_block = text[install_start:install_end]
+    assert 'cache: "reload"' in install_block
+    assert "cache.addAll(SHELL_URLS" in install_block
+
+
+def test_fetch_handler_revalidates_bypassing_the_http_cache():
+    """The network-first fetch must itself skip the browser's HTTP cache
+    (cache: "no-cache" forces revalidation with the server), otherwise the
+    service worker's own request for a fresh copy can be silently answered
+    by the same heuristic-freshness cache that caused the bug."""
+    text = (STATIC / "sw.js").read_text(encoding="utf-8")
+    fetch_start = text.index('addEventListener("fetch"')
+    push_start = text.index('addEventListener("push"')
+    fetch_block = text[fetch_start:push_start]
+    assert 'cache: "no-cache"' in fetch_block
+    assert "cached || network" not in fetch_block
+
+
+def test_app_reloads_once_when_a_new_service_worker_takes_control():
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    sw_block_start = js.index('if ("serviceWorker" in navigator)')
+    sw_block = js[sw_block_start:sw_block_start + 600]
+    assert 'addEventListener("controllerchange"' in sw_block
+    assert "location.reload()" in sw_block
+
+
+# ---------- Cache-Control: no-cache on every response ----------
+
+def test_index_and_static_assets_answer_with_cache_control_no_cache(cliente):
+    for path in ("/", "/static/app.js"):
+        r = cliente.get(path)
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-cache", f"{path}: {r.headers.get('cache-control')}"

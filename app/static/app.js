@@ -792,6 +792,15 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   });
+  // A new service worker taking control means a fresh deploy just activated;
+  // reload once so an already-open tab picks up the new shell right away
+  // instead of running on stale app.js until the next manual refresh.
+  let recarregado = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (recarregado) return;
+    recarregado = true;
+    location.reload();
+  });
 }
 
 // ---------- install prompt (PWA) ----------

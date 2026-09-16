@@ -1,9 +1,12 @@
 """Tests for the per-person history client: the Histórico tab, its month
 calendar and the "Último café" line on the Café page. These only inspect
-the static files served, the same style as tests/test_push_frontend.py,
-and never call GET /api/historico (tests/test_historico.py covers it).
+the static files served, the same style as tests/test_push_frontend.py;
+the one exception binds the fields the client dereferences to the real
+responses, as tests/test_contrato_api.py does (tests/test_historico.py
+covers the endpoint itself).
 """
 from app.main import STATIC
+from tests.conftest import regista
 
 
 def _app_js():
@@ -114,6 +117,23 @@ def test_last_coffee_line_is_refreshed_wherever_the_queue_warning_is():
         inicio = js.index(f'$("{handler}").onclick')
         bloco = js[inicio:js.index("\n};", inicio)]
         assert "atualizarUltimoCafe()" in bloco, f"{handler} does not refresh the last-coffee line"
+
+
+# ---------- contract: the fields the client dereferences exist in the live JSON ----------
+
+def test_the_fields_the_client_reads_exist_in_the_real_responses(cliente):
+    """textoUltimoCafe() reads eu.ultimo_cafe and desenharHistorico() reads
+    historico.hoje and historico.mes; a text assertion on app.js alone would
+    stay green if the server dropped either, so bind them to the responses."""
+    js = _app_js()
+    assert "eu.ultimo_cafe" in js
+    assert "h.hoje" in js and "h.mes" in js
+    c = regista(cliente, "Ana")
+    eu = c.get("/api/eu").json()
+    assert "ultimo_cafe" in eu
+    hist = c.get("/api/historico").json()
+    assert set(hist) >= {"mes", "hoje", "dias"}
+    assert len(hist["hoje"]) == 10 and hist["hoje"][:7] == hist["mes"]  # "YYYY-MM-DD", compared as-is by the client
 
 
 # ---------- service worker ----------

@@ -2,9 +2,12 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const vistas = { entrada: $("vista-entrada"), cafe: $("vista-cafe"), escritorio: $("vista-escritorio") };
+const vistas = { entrada: $("vista-entrada"), cafe: $("vista-cafe"), historico: $("vista-historico"), escritorio: $("vista-escritorio") };
 let eu = null;           // resposta de /api/eu
 let escritorio = null;   // resposta de /api/escritorio
+let historico = null;    // resposta de /api/historico (o mês visível)
+let histDia = null;      // dia seleccionado no calendário, "YYYY-MM-DD"
+let histPorDia = new Map(); // dia -> { n, horas: [{ hora, fila }] }, servidor mais fila offline
 
 // ---------- utilidades ----------
 
@@ -21,6 +24,21 @@ function nomeMes(ym) {
   return `${meses[m - 1]} ${a}`;
 }
 function plural(n, s, p) { return `${n} ${n === 1 ? s : p}`; }
+
+const DIAS_SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+
+// Local calendar keys built from the local date fields, never from
+// toISOString(): in Lisbon a local midnight is still the previous day in UTC.
+function diaLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function mesLocal(d) {
+  return diaLocal(d).slice(0, 7);
+}
+function mesVizinho(ym, delta) {
+  const [a, m] = ym.split("-").map(Number);
+  return mesLocal(new Date(a, m - 1 + delta, 1));
+}
 
 let toastTimer;
 function toast(msg, erro = false) {
@@ -126,11 +144,13 @@ async function apagarDB() {
 }
 
 // Stores the JSON response of an authenticated GET exactly as it arrived,
-// keyed by user so a shared device never mixes two people's snapshots.
-async function guardarInstantaneo(tipo, utilizadorId, dados) {
+// keyed by user so a shared device never mixes two people's snapshots. The
+// optional suffix keys one snapshot per month (historico:<id>:<mes>); the
+// callers without it keep the same eu:<id> and escritorio:<id> keys.
+async function guardarInstantaneo(tipo, utilizadorId, dados, sufixo) {
   try {
     await idbPut("instantaneos", {
-      chave: `${tipo}:${utilizadorId}`,
+      chave: `${tipo}:${utilizadorId}` + (sufixo ? `:${sufixo}` : ""),
       utilizador_id: utilizadorId,
       dados,
       em: new Date().toISOString(),
@@ -157,6 +177,36 @@ async function atualizarAvisoFila() {
   } else {
     el.hidden = true;
   }
+}
+
+// Text for the "Último café" line: the most recent of the server's
+// ultimo_cafe and the queued entries (which carry `em`). "hoje" and "ontem"
+// come from the browser clock, like the snapshot warnings already do.
+function textoUltimoCafe(ultimoIso, fila) {
+  let em = ultimoIso || null;
+  let porSincronizar = false;
+  for (const entrada of fila || []) {
+    if (!em || Date.parse(entrada.em) > Date.parse(em)) { em = entrada.em; porSincronizar = true; }
+  }
+  if (!em) return "Ainda nenhum café.";
+  const d = new Date(em);
+  const agora = new Date();
+  const ontem = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 1);
+  const dia = diaLocal(d);
+  let quando;
+  if (dia === diaLocal(agora)) quando = "hoje";
+  else if (dia === diaLocal(ontem)) quando = "ontem";
+  else quando = `${DIAS_SEMANA[d.getDay()]} ${dataCurta(em)}`;
+  return `Último café: ${quando} às ${horaCurta(em)}${porSincronizar ? " (por sincronizar)" : ""}`;
+}
+
+// Redrawn at the same points as atualizarAvisoFila(): both read the queue.
+async function atualizarUltimoCafe() {
+  const el = $("ultimo-cafe");
+  if (!el || !eu) return;
+  let fila;
+  try { fila = await idbTodos("fila"); } catch { fila = []; }
+  el.textContent = textoUltimoCafe(eu.ultimo_cafe, fila);
 }
 
 // The last-coffee undo is only safe while the coffee is still in the local
@@ -207,6 +257,7 @@ async function sincronizarFila() {
 
     const restantes = await idbTodos("fila").catch(() => entradas);
     await atualizarAvisoFila();
+    await atualizarUltimoCafe();
     await atualizarEstadoDesfazer();
 
     if (!restantes.length) {
@@ -214,6 +265,7 @@ async function sincronizarFila() {
         eu = await api("GET", "/eu");
         await guardarInstantaneo("eu", eu.utilizador.id, eu);
         desenharEu();
+        await atualizarUltimoCafe();
       } catch (erro) {
         console.error("Falha ao actualizar depois de sincronizar a fila:", erro);
       }
@@ -314,6 +366,7 @@ async function entrar() {
   desenharEu();
   mostrar("cafe");
   await atualizarAvisoFila();
+  await atualizarUltimoCafe();
   await atualizarEstadoDesfazer();
   atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));
   sincronizarFila().catch((erro) => console.error("Falha ao sincronizar a fila offline:", erro));
@@ -355,12 +408,14 @@ $("btn-cafe").onclick = async () => {
 
   eu.cafes += 1; eu.valor_cent += eu.preco_cent; eu.stock.stock -= 1;   // optimista
   desenharEu();
+  $("ultimo-cafe").textContent = textoUltimoCafe(eu.ultimo_cafe, [{ em }]); // a linha muda já, sem esperar pela fila
   await atualizarAvisoFila();
   await atualizarEstadoDesfazer();
 
   try {
     await api("POST", "/cafe", { cliente_id: clienteId, em });
     await idbApagar("fila", clienteId);
+    eu.ultimo_cafe = em; // the queue entry is gone, so the line must not fall back to the previous coffee
     toast("Café marcado ☕");
     await sincronizarFila(); // flushes anything still queued, then refreshes /api/eu once
   } catch (erro) {
@@ -368,6 +423,7 @@ $("btn-cafe").onclick = async () => {
     else toast(erro.message, true);
   } finally {
     await atualizarAvisoFila();
+    await atualizarUltimoCafe();
     await atualizarEstadoDesfazer();
     desenharEu();
     b.disabled = false;
@@ -387,6 +443,7 @@ $("btn-desfazer").onclick = async () => {
     eu.cafes -= 1; eu.valor_cent -= eu.preco_cent; eu.stock.stock += 1;
     desenharEu();
     await atualizarAvisoFila();
+    await atualizarUltimoCafe();
     await atualizarEstadoDesfazer();
     toast("Café retirado da fila.");
     return;
@@ -405,6 +462,7 @@ $("btn-desfazer").onclick = async () => {
     eu = await api("GET", "/eu");
     await guardarInstantaneo("eu", eu.utilizador.id, eu);
     desenharEu();
+    await atualizarUltimoCafe();
   } catch (e) { toast(e.message, true); }
 };
 
@@ -449,6 +507,123 @@ $("btn-sair").onclick = async () => {
   await apagarDB(); // /api/escritorio holds everyone's data: nothing offline survives a shared device's logout
   await carregarNomes();
   mostrar("entrada");
+};
+
+// ---------- histórico ----------
+
+// Fetches one month of the person's own coffees. The raw response is stored
+// as the snapshot before the offline queue is merged in, so a queued coffee
+// is never baked into a snapshot the server will count again after sync.
+async function carregarHistorico(mes) {
+  const idAtual = eu ? eu.utilizador.id : readLocal(UTILIZADOR_ATUAL_KEY);
+  let alvo = mes || mesLocal(new Date());
+  try {
+    const dados = await api("GET", "/historico" + (mes ? `?mes=${mes}` : ""));
+    alvo = dados.mes;
+    if (idAtual) await guardarInstantaneo("historico", idAtual, dados, dados.mes);
+    historico = dados;
+    $("hist-aviso").hidden = true;
+  } catch (erro) {
+    if (!erro || !erro.rede) throw erro;
+    const foto = idAtual ? await idbUm("instantaneos", `historico:${idAtual}:${alvo}`).catch(() => null) : null;
+    if (foto) {
+      historico = foto.dados;
+      $("hist-aviso").textContent = `Sem ligação. A mostrar o último estado conhecido (${horaCurta(foto.em)}).`;
+    } else {
+      historico = { mes: alvo, hoje: diaLocal(new Date()), dias: [] };
+      $("hist-aviso").textContent = "Sem ligação e sem histórico guardado para este mês.";
+    }
+    $("hist-aviso").hidden = false;
+  }
+
+  histPorDia = new Map();
+  for (const d of historico.dias) histPorDia.set(d.dia, { n: d.n, horas: d.horas.map((hora) => ({ hora, fila: false })) });
+
+  // Queued coffees count as marked (H7): each one lands on its local day,
+  // converted here in the browser because the queue only exists here.
+  let fila;
+  try { fila = await idbTodos("fila"); } catch { fila = []; }
+  for (const entrada of fila) {
+    const d = new Date(entrada.em);
+    if (mesLocal(d) !== historico.mes) continue;
+    const dia = diaLocal(d);
+    if (!histPorDia.has(dia)) histPorDia.set(dia, { n: 0, horas: [] });
+    const info = histPorDia.get(dia);
+    info.n += 1;
+    info.horas.push({ hora: horaCurta(entrada.em), fila: true });
+    info.horas.sort((a, b) => a.hora.localeCompare(b.hora));
+  }
+
+  // Current month opens on today (the "já marquei?" answer with zero taps);
+  // any other month opens on its most recent day with coffees, if any.
+  if (historico.mes === historico.hoje.slice(0, 7)) histDia = historico.hoje;
+  else histDia = [...histPorDia.keys()].sort().pop() || null;
+  desenharHistorico();
+}
+
+function desenharHistorico() {
+  const h = historico;
+  const [ano, mes] = h.mes.split("-").map(Number);
+  $("hist-mes").textContent = nomeMes(h.mes);
+  $("hist-seguinte").disabled = h.mes >= h.hoje.slice(0, 7);
+
+  const grelha = $("hist-grelha");
+  grelha.innerHTML = "";
+  for (const s of ["S", "T", "Q", "Q", "S", "S", "D"]) {
+    const c = document.createElement("span");
+    c.className = "semana";
+    c.textContent = s;
+    grelha.appendChild(c);
+  }
+  const vazios = (new Date(ano, mes - 1, 1).getDay() + 6) % 7; // semana a começar à segunda
+  for (let i = 0; i < vazios; i++) grelha.appendChild(document.createElement("span"));
+  const nDias = new Date(ano, mes, 0).getDate();
+  for (let n = 1; n <= nDias; n++) {
+    const dia = `${h.mes}-${String(n).padStart(2, "0")}`;
+    const info = histPorDia.get(dia);
+    const semana = new Date(ano, mes - 1, n).getDay();
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "dia";
+    b.dataset.dia = dia;
+    if (semana === 0 || semana === 6) b.classList.add("fds");
+    if (dia === h.hoje) b.classList.add("hoje");
+    if (dia > h.hoje) { b.classList.add("futuro"); b.disabled = true; }
+    if (dia === histDia) b.classList.add("escolhido");
+    if (info && info.horas.some((x) => x.fila)) b.classList.add("fila");
+    b.innerHTML = `<small>${n}</small><span class="n">${info ? info.n : ""}</span>`;
+    grelha.appendChild(b);
+  }
+
+  const detalhe = $("hist-detalhe");
+  if (!histDia) { detalhe.textContent = "Toca num dia"; return; }
+  const [a, m, d] = histDia.split("-").map(Number);
+  const nome = DIAS_SEMANA[new Date(a, m - 1, d).getDay()];
+  const cabecalho = `${nome.charAt(0).toUpperCase()}${nome.slice(1)} ${d}`;
+  const info = histPorDia.get(histDia);
+  if (!info || !info.n) detalhe.textContent = `${cabecalho} · nenhum café`;
+  else {
+    const horas = info.horas.map((x) => x.hora + (x.fila ? " (por sincronizar)" : ""));
+    detalhe.textContent = `${cabecalho} · ${plural(info.n, "café", "cafés")} · ${horas.join(" · ")}`;
+  }
+}
+
+function escolherDia(dia) {
+  histDia = dia;
+  desenharHistorico();
+}
+
+$("hist-grelha").onclick = (ev) => {
+  const b = ev.target.closest("button.dia");
+  if (!b || b.disabled) return;
+  escolherDia(b.dataset.dia);
+};
+$("hist-anterior").onclick = () => {
+  carregarHistorico(mesVizinho(historico.mes, -1)).catch((e) => toast(e.message, true));
+};
+$("hist-seguinte").onclick = () => {
+  if (historico.mes >= historico.hoje.slice(0, 7)) return;
+  carregarHistorico(mesVizinho(historico.mes, 1)).catch((e) => toast(e.message, true));
 };
 
 // ---------- escritório ----------
@@ -579,7 +754,10 @@ $("abas").onclick = async (ev) => {
   if (!b) return;
   try {
     if (b.dataset.vista === "cafe") await entrar();
-    else {
+    else if (b.dataset.vista === "historico") {
+      await carregarHistorico();
+      mostrar("historico");
+    } else {
       await carregarEscritorio();
       mostrar("escritorio");
       atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));

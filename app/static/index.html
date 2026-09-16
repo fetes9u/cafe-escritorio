@@ -18,6 +18,7 @@
   <h1>☕ Café do escritório</h1>
   <nav id="abas" hidden>
     <button data-vista="cafe" class="activa">Café</button>
+    <button data-vista="historico">Histórico</button>
     <button data-vista="escritorio">Escritório</button>
   </nav>
 </header>
@@ -63,6 +64,7 @@
   <p id="fotografia-aviso" class="nota aviso-fotografia" hidden></p>
   <button id="btn-cafe" class="grande">Bebi um café ☕</button>
   <p id="fila-aviso" class="nota aviso-fila" hidden></p>
+  <p id="ultimo-cafe" class="nota"></p>
   <div id="stock" class="faixa"></div>
 
   <div class="cartao">
@@ -82,6 +84,18 @@
     <button id="btn-pin" class="ligacao">Mudar PIN</button> ·
     <button id="btn-sair" class="ligacao">Sair</button>
   </footer>
+</section>
+
+<!-- HISTÓRICO -->
+<section id="vista-historico" hidden>
+  <p id="hist-aviso" class="nota aviso-fotografia" hidden></p>
+  <div class="hist-cabecalho">
+    <button type="button" id="hist-anterior" class="ligacao" aria-label="Mês anterior">‹</button>
+    <b id="hist-mes"></b>
+    <button type="button" id="hist-seguinte" class="ligacao" aria-label="Mês seguinte">›</button>
+  </div>
+  <div id="hist-grelha" class="calendario"></div>
+  <div id="hist-detalhe" class="cartao"></div>
 </section>
 
 <!-- ESCRITÓRIO -->

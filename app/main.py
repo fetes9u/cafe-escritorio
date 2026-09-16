@@ -323,7 +323,7 @@ def eu(u: dict = Depends(utilizador_actual)):
         cafes = _cafes_por_utilizador(c, mes).get(u["id"], 0)
         cafes_ant = _cafes_por_utilizador(c, anterior).get(u["id"], 0)
         ultimo = c.execute(
-            "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY id DESC LIMIT 1", (u["id"],)
+            "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY em DESC LIMIT 1", (u["id"],)
         ).fetchone()
         estimativa = logic.estimativa_mes(cafes, hoje, mes, u["cafes_dia"], _data_registo(u["criado_em"]))
         pag = _pagamento(c, anterior, u["id"])

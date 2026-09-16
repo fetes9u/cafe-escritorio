@@ -69,3 +69,15 @@ def test_mes_omitido_usa_o_mes_e_hoje_do_relogio(cliente, relogio):
     corpo = r.json()
     assert corpo["mes"] == "2026-09"
     assert corpo["hoje"] == "2026-09-11"
+
+
+def test_ultimo_cafe_por_instante_nao_por_id(cliente, relogio):
+    a = regista(cliente, "Ana")
+    relogio.set(2026, 9, 11, 10, 0)
+    a.post("/api/cafe")
+    a.post("/api/cafe", json={"em": "2026-09-11T08:00:00+00:00"})
+
+    r = a.get("/api/eu")
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["ultimo_cafe"] == "2026-09-11T10:00:00+00:00"

@@ -227,6 +227,14 @@ def test_pagar_por_mbway_nunca_toca_na_fila_offline():
     assert "Precisas de rede para registar um pagamento." in submit_bloco
 
 
+def test_apenas_o_cafe_e_posto_na_fila_offline():
+    """Spec item 6: payments, edits and settings all need the network and
+    must never be queued like a coffee is. `idbPut("fila", ...)` must appear
+    exactly once in the whole client, at the coffee button."""
+    js = _app_js()
+    assert js.count('idbPut("fila"') == 1
+
+
 def test_pagamento_registado_recarrega_eu():
     js = _app_js()
     marcador = '$("form-pagar").onsubmit'

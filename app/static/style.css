@@ -143,7 +143,11 @@ body.com-faixa-instalar main { padding-bottom: calc(64px + env(safe-area-inset-b
 .historico-lista { flex-basis: 100%; margin: 6px 0 0; padding: 0; list-style: none; }
 .historico-lista li { border-top: 1px dashed var(--linha); font-size: .85rem; padding: 4px 0; }
 
-/* Reembolsar: an inline row under the person's row in the office table */
+/* Reembolsar: an inline row under the person's row in the office table.
+   The button is forced onto its own line inside the saldo cell: that cell
+   is white-space: nowrap for the amount, and "+4,84 € Reembolsar" side by
+   side would overflow the table at 375px. */
 .linha-reembolso td { padding: 8px 0; background: var(--creme); }
+.btn-reembolsar { display: block; margin-top: 2px; white-space: nowrap; }
 
 #form-compra select { flex: 1; min-width: 110px; }

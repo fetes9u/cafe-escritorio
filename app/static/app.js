@@ -70,6 +70,13 @@ function lerValorCent(input) {
   return cent >= 1 && cent <= 100000 ? cent : null;
 }
 
+// Payments, edits and settings always need the network (spec item 6): never
+// queued, and the error shown must say so instead of a generic "Sem
+// ligação." from a failed fetch().
+function msgRede(erro, acao) {
+  return erro && erro.rede ? `Precisas de rede para ${acao}.` : erro.message;
+}
+
 // Portuguese labels for tests/historico_alteracoes.campo (spec 5.4).
 const CAMPO_HISTORICO_LABEL = {
   valor_cent: "valor",
@@ -161,7 +168,18 @@ function montarFormPagamentoInline(container, opts) {
       op.value = o.value; op.textContent = o.label;
       sel.appendChild(op);
     }
-    if (opts.destinoInicial !== undefined) sel.value = opts.destinoInicial;
+    if (opts.destinoInicial !== undefined) {
+      // The current destination can be missing from opcoesDestino (eg. "caixa"
+      // after the keeper was unset): without this, sel.value silently falls
+      // back to the first option and Guardar would save a change no one made.
+      if (![...sel.options].some((o) => o.value === opts.destinoInicial)) {
+        const op = document.createElement("option");
+        op.value = opts.destinoInicial;
+        op.textContent = opts.destinoInicialLabel || opts.destinoInicial;
+        sel.insertBefore(op, sel.firstChild);
+      }
+      sel.value = opts.destinoInicial;
+    }
   }
   form.querySelector(".fp-cancelar").onclick = () => {
     container.hidden = true;
@@ -774,7 +792,7 @@ $("form-pagar").onsubmit = async (e) => {
   try {
     if (paraCaixa) await api("POST", "/transferencias", { recebedor_id: null, para_caixa: true, valor_cent: valorCent });
     else await api("POST", "/transferencias", { recebedor_id: Number(destino), para_caixa: false, valor_cent: valorCent });
-    const nome = $("pagar-recebedor").selectedOptions[0].textContent;
+    const nome = paraCaixa ? eu.caixa.responsavel : $("pagar-recebedor").selectedOptions[0].textContent;
     $("form-pagar").hidden = true;
     $("saldo-vista").hidden = false;
     toast(souORecebedor ? "Pagamento registado." : `Pagamento registado. Notificação enviada a ${nome}.`);
@@ -1070,13 +1088,14 @@ $("dinheiro-lista").onclick = async (ev) => {
     const comCaixa = !t.de_caixa;
     let opcoes;
     try { opcoes = await opcoesDestino({ tipo: comCaixa ? "normal" : "de_caixa" }); }
-    catch (erro) { toast(erro.message, true); return; }
+    catch (erro) { toast(msgRede(erro, "editar um pagamento"), true); return; }
     const destinoInicial = t.para_caixa ? "caixa" : String(t.outro_id);
     const container = li.querySelector(".fp-inline");
     montarFormPagamentoInline(container, {
       valorInicial: t.valor_cent,
       opcoesDestino: opcoes,
       destinoInicial,
+      destinoInicialLabel: t.para_caixa ? "Caixa" : t.outro,
       onGuardar: async (valorCent, destinoValue) => {
         try {
           const mudou = await guardarEdicaoPagamento(t.id, valorCent, destinoValue, { valorCent: t.valor_cent, destino: destinoInicial }, comCaixa);
@@ -1084,7 +1103,7 @@ $("dinheiro-lista").onclick = async (ev) => {
           if (mudou) toast("Pagamento actualizado.");
           await carregarDinheiro();
           if (eu) await recarregarEu();
-        } catch (erro) { toast(erro.message, true); }
+        } catch (erro) { toast(msgRede(erro, "editar um pagamento"), true); }
       },
     });
   }
@@ -1122,13 +1141,6 @@ function saldoCurto(cent) {
   return (cent < 0 ? "-" : "+") + euros(Math.abs(cent));
 }
 
-// "Caixa com Ana: 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €",
-// ou o aviso sem responsável (spec 5.3).
-function textoCaixa(c) {
-  if (!c || c.responsavel_id == null) return "Ninguém guarda a caixa. Escolhe nas Definições.";
-  return `Caixa com ${c.responsavel}: ${euros(c.dinheiro_cent)} em dinheiro · ${euros(c.por_receber_cent)} por receber · fundo ${euros(c.fundo_cent)}`;
-}
-
 function desenharEscritorio() {
   const e = escritorio;
   const sel = $("sel-mes");
@@ -1140,7 +1152,11 @@ function desenharEscritorio() {
   }
   sel.value = e.mes;
   $("esc-total").textContent = `${plural(e.total_cafes, "cápsula", "cápsulas")} · ${euros(e.total_cent)}`;
-  $("esc-caixa").textContent = textoCaixa(e.caixa);
+  // "Caixa com Ana: 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €",
+  // ou o aviso sem responsável (spec 5.3).
+  $("esc-caixa").textContent = (!e.caixa || e.caixa.responsavel_id == null)
+    ? "Ninguém guarda a caixa. Escolhe nas Definições."
+    : `Caixa com ${e.caixa.responsavel}: ${euros(e.caixa.dinheiro_cent)} em dinheiro · ${euros(e.caixa.por_receber_cent)} por receber · fundo ${euros(e.caixa.fundo_cent)}`;
 
   const souGuarda = e.caixa && e.caixa.responsavel_id === e.eu;
   const tb = $("tabela").querySelector("tbody");
@@ -1150,7 +1166,7 @@ function desenharEscritorio() {
     tr.dataset.pessoaId = p.id;
     const classeSaldo = p.saldo_cent < 0 ? "saldo-neg" : p.saldo_cent > 0 ? "saldo-pos" : "";
     const reembolsar = souGuarda && p.saldo_cent > 0
-      ? ` <button type="button" class="ligacao" data-reembolsar="${p.id}">Reembolsar</button>` : "";
+      ? ` <button type="button" class="ligacao btn-reembolsar" data-reembolsar="${p.id}">Reembolsar</button>` : "";
     tr.innerHTML = `<td>${p.nome}</td><td class="num">${p.cafes}</td><td class="num">${euros(p.valor_cent)}</td>`
       + `<td class="num ${classeSaldo}">${saldoCurto(p.saldo_cent)}${reembolsar}</td>`;
     tb.appendChild(tr);
@@ -1174,9 +1190,10 @@ function desenharEscritorio() {
     const li = document.createElement("li");
     li.dataset.id = c.id;
     const origem = c.custo_cent === 0 ? "oferta" : c.paga_pela_caixa ? "pela caixa" : `do bolso de ${c.nome || "?"}`;
+    const estimado = c.custo_estimado ? ' <span class="nota">custo estimado</span>' : "";
     const editado = c.editada ? ` <button type="button" class="ligacao" data-historico-compra="${c.id}">editado</button>` : "";
     li.innerHTML = `<span>+${c.capsulas} · ${euros(c.custo_cent)} · ${origem} · ${dataCurta(c.em)}`
-      + `${c.nota ? " · " + c.nota : ""}${editado}</span><span>${acoes.join(" ")}</span>`
+      + `${c.nota ? " · " + c.nota : ""}${estimado}${editado}</span><span>${acoes.join(" ")}</span>`
       + `<div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul>`;
     ul.appendChild(li);
   }
@@ -1322,13 +1339,14 @@ async function abrirEdicaoPagamento(li, t) {
   const comCaixa = !t.de_caixa;
   let opcoes;
   try { opcoes = await opcoesDestino({ tipo: comCaixa ? "normal" : "de_caixa" }); }
-  catch (erro) { toast(erro.message, true); return; }
+  catch (erro) { toast(msgRede(erro, "editar um pagamento"), true); return; }
   const destinoInicial = t.para_caixa ? "caixa" : String(t.recebedor_id);
   const container = li.querySelector(".fp-inline");
   montarFormPagamentoInline(container, {
     valorInicial: t.valor_cent,
     opcoesDestino: opcoes,
     destinoInicial,
+    destinoInicialLabel: t.para_caixa ? "Caixa" : t.recebedor,
     onGuardar: async (valorCent, destinoValue) => {
       try {
         const mudou = await guardarEdicaoPagamento(t.id, valorCent, destinoValue, { valorCent: t.valor_cent, destino: destinoInicial }, comCaixa);
@@ -1336,7 +1354,7 @@ async function abrirEdicaoPagamento(li, t) {
         if (mudou) toast("Pagamento actualizado.");
         await carregarPagamentos();
         if (eu) await recarregarEu();
-      } catch (erro) { toast(erro.message, true); }
+      } catch (erro) { toast(msgRede(erro, "editar um pagamento"), true); }
     },
   });
 }
@@ -1366,7 +1384,7 @@ function abrirReembolso(botao) {
         tr.remove();
         await carregarEscritorio(escritorio.mes);
         if (eu) await recarregarEu();
-      } catch (erro) { toast(erro.message, true); }
+      } catch (erro) { toast(msgRede(erro, "reembolsar"), true); }
     },
     onCancelar: () => tr.remove(),
   });
@@ -1374,8 +1392,13 @@ function abrirReembolso(botao) {
 
 function abrirEdicaoCompra(li, c) {
   const container = li.querySelector(".fp-inline");
+  const pagaComInicial = c.custo_cent === 0 ? "oferta" : c.paga_pela_caixa ? "caixa" : "bolso";
   const pagaComOpcoes = [];
-  if (eu && eu.caixa) pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
+  // "Caixa" fica na lista se há responsável hoje, ou se esta compra já foi
+  // paga pela caixa dantes (responsável entretanto removido): sem isto, o
+  // select cairia na primeira opção e Guardar mudaria "paga com" sem ninguém
+  // ter pedido.
+  if ((eu && eu.caixa) || pagaComInicial === "caixa") pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
   pagaComOpcoes.push({ value: "bolso", label: "Do meu bolso" }, { value: "oferta", label: "Oferta" });
   container.innerHTML = `<form class="linha">
     <label>Cápsulas <input type="number" min="1" max="10000" class="ec-capsulas" required></label>
@@ -1395,7 +1418,6 @@ function abrirEdicaoCompra(li, c) {
     op.value = o.value; op.textContent = o.label;
     sel.appendChild(op);
   }
-  const pagaComInicial = c.custo_cent === 0 ? "oferta" : c.paga_pela_caixa ? "caixa" : "bolso";
   sel.value = pagaComInicial;
   custoInput.disabled = pagaComInicial === "oferta";
   sel.onchange = () => {
@@ -1419,7 +1441,7 @@ function abrirEdicaoCompra(li, c) {
       toast("Entrada actualizada.");
       container.hidden = true; container.innerHTML = "";
       await carregarEscritorio(escritorio.mes);
-    } catch (erro) { toast(erro.message, true); }
+    } catch (erro) { toast(msgRede(erro, "editar uma entrada"), true); }
   };
   container.hidden = false;
 }
@@ -1462,9 +1484,14 @@ $("form-config").onsubmit = async (e) => {
       caixa_responsavel_id: respId === "" ? null : Number(respId),
     });
     toast("Definições guardadas.");
+    // O histórico de config já aberto fica desactualizado depois de gravar:
+    // esquece a versão em cache para o próximo "ver alterações" ir buscá-la.
+    const histCfg = $("cfg-historico-lista");
+    delete histCfg.dataset.carregado;
+    histCfg.hidden = true;
     await carregarEscritorio(escritorio.mes);
     if (eu) await recarregarEu(); // a linha da caixa e as opções de pagar mudam com o responsável
-  } catch (err) { toast(err.message, true); }
+  } catch (err) { toast(msgRede(err, "guardar as definições"), true); }
 };
 
 // ---------- abas e arranque ----------

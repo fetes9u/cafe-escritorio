@@ -10,6 +10,24 @@ from . import logic
 DB_PATH = os.environ.get("CAFE_DB", "data/cafe.db")
 
 
+def _ddl_compras(tabela: str) -> str:
+    """A mesma DDL serve a base nova e a reconstrução de uma base sem
+    AUTOINCREMENT. AUTOINCREMENT evita que o próximo INSERT reaproveite o id
+    de uma compra apagada e herde o histórico dela."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {tabela} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    utilizador_id INTEGER REFERENCES utilizadores(id),
+    capsulas INTEGER NOT NULL,
+    em TEXT NOT NULL,
+    nota TEXT,
+    custo_cent INTEGER,
+    custo_estimado INTEGER NOT NULL DEFAULT 0,  -- 1: custo deduzido na conversão, não declarado
+    paga_pela_caixa INTEGER NOT NULL DEFAULT 0  -- 1: o custo saiu da caixa, não do bolso de quem registou
+);
+"""
+
+
 def _ddl_transferencias(tabela: str) -> str:
     """A mesma DDL serve a base nova e a reconstrução de uma base de 0.11.0."""
     return f"""
@@ -59,17 +77,7 @@ CREATE TABLE IF NOT EXISTS cafes (
     valor_cent INTEGER       -- preço em vigor quando o servidor gravou o café
 );
 CREATE INDEX IF NOT EXISTS cafes_mes ON cafes(mes, utilizador_id);
-CREATE TABLE IF NOT EXISTS compras (
-    id INTEGER PRIMARY KEY,
-    utilizador_id INTEGER REFERENCES utilizadores(id),
-    capsulas INTEGER NOT NULL,
-    em TEXT NOT NULL,
-    nota TEXT,
-    custo_cent INTEGER,
-    custo_estimado INTEGER NOT NULL DEFAULT 0,  -- 1: custo deduzido na conversão, não declarado
-    paga_pela_caixa INTEGER NOT NULL DEFAULT 0  -- 1: o custo saiu da caixa, não do bolso de quem registou
-);
-""" + _ddl_transferencias("transferencias") + """
+""" + _ddl_compras("compras") + _ddl_transferencias("transferencias") + """
 CREATE TABLE IF NOT EXISTS config (
     chave TEXT PRIMARY KEY,
     valor TEXT NOT NULL
@@ -140,9 +148,10 @@ def _acrescenta_coluna(c: sqlite3.Connection, tabela: str, coluna: str, tipo: st
 
 def _converte(c: sqlite3.Connection) -> None:
     """Os passos de dados, numa só transacção explícita: reconstruir as
-    transferências de 0.11.0, converter o fecho de mês e reparar os cafés
-    gravados a zero pelo preço médio. Cada passo só toca no que está por
-    converter (coluna em falta, IS NULL, UNIQUE, = 0), portanto um segundo
+    transferências de 0.11.0, reconstruir as compras sem AUTOINCREMENT,
+    converter o fecho de mês e reparar os cafés gravados a zero pelo preço
+    médio. Cada passo só toca no que está por converter (coluna em falta, IS
+    NULL, UNIQUE, = 0, texto do DDL sem AUTOINCREMENT), portanto um segundo
     arranque não muda nada.
 
     A reconstrução segue o procedimento documentado do SQLite: chaves
@@ -150,13 +159,18 @@ def _converte(c: sqlite3.Connection) -> None:
     transacção, por isso desliga-se antes do BEGIN) e verificadas à mão antes
     do COMMIT. Uma base de 0.10 recebe a forma nova do SCHEMA e converte com as
     chaves ligadas."""
-    reconstruir = "para_caixa" not in _colunas(c, "transferencias")
-    if reconstruir:
+    reconstruir_transferencias = "para_caixa" not in _colunas(c, "transferencias")
+    reconstruir_compras = "AUTOINCREMENT" not in (_sql_tabela(c, "compras") or "")
+    desliga_fk = reconstruir_transferencias or reconstruir_compras
+    if desliga_fk:
         c.execute("PRAGMA foreign_keys = OFF")
     c.execute("BEGIN IMMEDIATE")
     try:
-        if reconstruir:
+        if reconstruir_transferencias:
             _reconstroi_transferencias(c)
+        if reconstruir_compras:
+            _reconstroi_compras(c)
+            _garante_sequencia_compras(c)
         preco = int(get_config(c, "preco_cent"))
         # A tabela antiga só existe em bases criadas antes dos saldos.
         tem_pagamentos = c.execute(
@@ -190,14 +204,17 @@ def _converte(c: sqlite3.Connection) -> None:
         for cafe in c.execute("SELECT id FROM cafes WHERE valor_cent = 0 ORDER BY id").fetchall():
             c.execute("UPDATE cafes SET valor_cent = ? WHERE id = ?", (preco, cafe["id"]))
             regista_alteracao(c, "cafe", cafe["id"], "valor_cent", 0, preco, None)
-        if reconstruir and c.execute("PRAGMA foreign_key_check(transferencias)").fetchone():
-            raise sqlite3.IntegrityError("FOREIGN KEY constraint failed ao reconstruir transferencias")
+        # Com as chaves desligadas, nenhuma escrita desta transacção é
+        # verificada em tempo real (não só as das tabelas reconstruídas), por
+        # isso a verificação à mão cobre a base toda.
+        if desliga_fk and c.execute("PRAGMA foreign_key_check").fetchone():
+            raise sqlite3.IntegrityError("FOREIGN KEY constraint failed na conversão")
         c.execute("COMMIT")
     except BaseException:
         c.execute("ROLLBACK")
         raise
     finally:
-        if reconstruir:
+        if desliga_fk:
             c.execute("PRAGMA foreign_keys = ON")
 
 
@@ -214,6 +231,50 @@ def _reconstroi_transferencias(c: sqlite3.Connection) -> None:
     )
     c.execute("DROP TABLE transferencias")
     c.execute("ALTER TABLE transferencias_nova RENAME TO transferencias")
+
+
+def _reconstroi_compras(c: sqlite3.Connection) -> None:
+    """Sem AUTOINCREMENT, apagar a compra mais recente deixava o próximo
+    INSERT reaproveitar o id, herdando o histórico da compra apagada. Mesmos
+    ids, mesmas colunas, mesmos dados."""
+    c.execute(_ddl_compras("compras_nova"))
+    c.execute(
+        "INSERT INTO compras_nova (id, utilizador_id, capsulas, em, nota, custo_cent, "
+        "custo_estimado, paga_pela_caixa) "
+        "SELECT id, utilizador_id, capsulas, em, nota, custo_cent, custo_estimado, paga_pela_caixa "
+        "FROM compras"
+    )
+    c.execute("DROP TABLE compras")
+    c.execute("ALTER TABLE compras_nova RENAME TO compras")
+
+
+def _garante_sequencia_compras(c: sqlite3.Connection) -> None:
+    """Uma compra apagada antes desta migração pode ter id maior do que
+    qualquer compra que sobrou, com linhas de histórico à espera desse id.
+    AUTOINCREMENT só olha para as linhas que existem; sem isto, o próximo
+    INSERT reaproveitava-o na mesma. sqlite_sequence não tem chave única em
+    `name`, por isso lê-se e escreve-se à mão."""
+    maximo = c.execute(
+        "SELECT MAX(v) AS m FROM ("
+        "  SELECT MAX(id) AS v FROM compras"
+        "  UNION ALL"
+        "  SELECT MAX(entidade_id) AS v FROM historico_alteracoes WHERE entidade = 'compra'"
+        ")"
+    ).fetchone()["m"]
+    if maximo is None:
+        return
+    actual = c.execute("SELECT seq FROM sqlite_sequence WHERE name = 'compras'").fetchone()
+    if actual is None:
+        c.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('compras', ?)", (maximo,))
+    elif actual["seq"] < maximo:
+        c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'compras'", (maximo,))
+
+
+def _sql_tabela(c: sqlite3.Connection, tabela: str) -> str | None:
+    linha = c.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (tabela,)
+    ).fetchone()
+    return linha["sql"] if linha else None
 
 
 @contextmanager

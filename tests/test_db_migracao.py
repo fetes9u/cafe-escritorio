@@ -592,3 +592,175 @@ def test_reconstrucao_com_chave_estrangeira_partida_nao_deixa_nada_feito(tmp_pat
     _executa(caminho, "DELETE FROM transferencias WHERE id = 20")
     db.init(caminho)
     assert "para_caixa" in {r["name"] for r in _le(caminho, "PRAGMA table_info(transferencias)")}
+
+
+# ---------- compras: AUTOINCREMENT ----------
+
+# DDL literal do SCHEMA de 6429072 (0.12.0, a caixa já em produção, mas
+# `compras.id` ainda sem AUTOINCREMENT). Não se importa de db.py.
+SCHEMA_6429072 = """
+CREATE TABLE IF NOT EXISTS utilizadores (
+    id INTEGER PRIMARY KEY,
+    nome TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    pin_hash TEXT NOT NULL,
+    cafes_dia REAL NOT NULL DEFAULT 1,
+    tentativas INTEGER NOT NULL DEFAULT 0,
+    bloqueado_ate TEXT,
+    criado_em TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessoes (
+    token TEXT PRIMARY KEY,
+    utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id),
+    criado_em TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cafes (
+    id INTEGER PRIMARY KEY,
+    utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id),
+    em TEXT NOT NULL,
+    mes TEXT NOT NULL,
+    cliente_id TEXT,
+    valor_cent INTEGER
+);
+CREATE INDEX IF NOT EXISTS cafes_mes ON cafes(mes, utilizador_id);
+CREATE UNIQUE INDEX IF NOT EXISTS cafes_cliente_id ON cafes(cliente_id) WHERE cliente_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS compras (
+    id INTEGER PRIMARY KEY,
+    utilizador_id INTEGER REFERENCES utilizadores(id),
+    capsulas INTEGER NOT NULL,
+    em TEXT NOT NULL,
+    nota TEXT,
+    custo_cent INTEGER,
+    custo_estimado INTEGER NOT NULL DEFAULT 0,
+    paga_pela_caixa INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS transferencias (
+    id INTEGER PRIMARY KEY,
+    pagador_id INTEGER REFERENCES utilizadores(id),
+    recebedor_id INTEGER REFERENCES utilizadores(id),
+    para_caixa INTEGER NOT NULL DEFAULT 0,
+    de_caixa INTEGER NOT NULL DEFAULT 0,
+    valor_cent INTEGER NOT NULL CHECK (valor_cent > 0),
+    em TEXT NOT NULL,
+    confirmada_em TEXT,
+    anulada_em TEXT,
+    anulada_por INTEGER REFERENCES utilizadores(id),
+    pagamento_origem_id INTEGER UNIQUE,
+    CHECK (NOT (para_caixa = 1 AND de_caixa = 1)),
+    CHECK ((para_caixa = 1) = (recebedor_id IS NULL)),
+    CHECK ((de_caixa = 1) = (pagador_id IS NULL)),
+    CHECK (pagador_id IS NULL OR recebedor_id IS NULL OR pagador_id != recebedor_id)
+);
+CREATE TABLE IF NOT EXISTS config (
+    chave TEXT PRIMARY KEY,
+    valor TEXT NOT NULL
+);
+INSERT OR IGNORE INTO config VALUES ('preco_cent', '25');
+INSERT OR IGNORE INTO config VALUES ('stock_baixo', '16');
+CREATE TABLE IF NOT EXISTS subscricoes (
+    endpoint TEXT PRIMARY KEY,
+    utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id) ON DELETE CASCADE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    dispositivo TEXT,
+    criado_em TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS subscricoes_utilizador ON subscricoes(utilizador_id);
+CREATE TABLE IF NOT EXISTS notificacoes_desligadas (
+    utilizador_id INTEGER NOT NULL REFERENCES utilizadores(id) ON DELETE CASCADE,
+    evento TEXT NOT NULL,
+    PRIMARY KEY (utilizador_id, evento)
+);
+CREATE TABLE IF NOT EXISTS historico_alteracoes (
+    id INTEGER PRIMARY KEY,
+    entidade TEXT NOT NULL,
+    entidade_id INTEGER,
+    campo TEXT NOT NULL,
+    antes TEXT,
+    depois TEXT,
+    utilizador_id INTEGER REFERENCES utilizadores(id),
+    em TEXT NOT NULL
+);
+"""
+
+
+def _base_de_6429072(caminho: str) -> None:
+    """Como a produção antes deste arranjo: três compras vivas (ids 1 a 3) e
+    uma linha de histórico à espera do id 7, resto de uma edição numa compra
+    que entretanto foi apagada. Sem AUTOINCREMENT, o próximo INSERT ia
+    reaproveitar um id e herdar esse histórico."""
+    ligacao = sqlite3.connect(caminho)
+    ligacao.executescript(SCHEMA_6429072)
+    for uid, nome in ((ANA, "Ana"), (BEA, "Bea"), (RUI, "Rui")):
+        ligacao.execute(
+            "INSERT INTO utilizadores (id, nome, pin_hash, criado_em) "
+            "VALUES (?, ?, 'x$y', '2026-07-01T00:00:00+00:00')",
+            (uid, nome),
+        )
+    ligacao.executemany(
+        "INSERT INTO compras (id, utilizador_id, capsulas, em, custo_cent, custo_estimado, paga_pela_caixa) "
+        "VALUES (?, ?, ?, ?, ?, 0, 0)",
+        [
+            (1, BEA, 77, "2026-09-01T08:00:00+00:00", 1),
+            (2, ANA, 41, "2026-09-15T08:00:00+00:00", 984),
+            (3, RUI, 10, "2026-09-18T08:00:00+00:00", 250),
+        ],
+    )
+    ligacao.execute(
+        "INSERT INTO historico_alteracoes (entidade, entidade_id, campo, antes, depois, utilizador_id, em) "
+        "VALUES ('compra', 7, 'custo_cent', '500', '600', ?, '2026-09-19T08:00:00+00:00')",
+        (ANA,),
+    )
+    ligacao.commit()
+    ligacao.close()
+
+
+def test_conversao_de_compras_sem_autoincrement(tmp_path):
+    caminho = str(tmp_path / "producao.db")
+    _base_de_6429072(caminho)
+
+    db.init(caminho)
+
+    # Mesmos ids, mesmas colunas, mesmos dados.
+    assert _le(caminho, "SELECT id, utilizador_id, capsulas, custo_cent FROM compras ORDER BY id") == [
+        {"id": 1, "utilizador_id": BEA, "capsulas": 77, "custo_cent": 1},
+        {"id": 2, "utilizador_id": ANA, "capsulas": 41, "custo_cent": 984},
+        {"id": 3, "utilizador_id": RUI, "capsulas": 10, "custo_cent": 250},
+    ]
+    # AUTOINCREMENT em vigor.
+    assert "AUTOINCREMENT" in _le(
+        caminho, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'compras'"
+    )[0]["sql"]
+    # O histórico da compra 7 (apagada antes da migração) continua lá.
+    assert _le(caminho, "SELECT entidade_id FROM historico_alteracoes WHERE campo = 'custo_cent'") == [
+        {"entidade_id": 7},
+    ]
+    # O próximo INSERT fica acima dos dois: nem o maior id vivo (3) nem o
+    # histórico da compra 7 (id maior) são reaproveitados.
+    ligacao = sqlite3.connect(caminho)
+    cursor = ligacao.execute(
+        "INSERT INTO compras (utilizador_id, capsulas, em, custo_cent) "
+        "VALUES (?, 5, '2026-09-23T09:00:00+00:00', 125)",
+        (ANA,),
+    )
+    ligacao.commit()
+    assert cursor.lastrowid == 8
+    ligacao.close()
+
+
+def test_segundo_init_de_compras_sem_autoincrement_nao_muda_nada(tmp_path):
+    caminho = str(tmp_path / "producao.db")
+    _base_de_6429072(caminho)
+    db.init(caminho)
+    consultas = (
+        "SELECT * FROM compras ORDER BY id",
+        "SELECT * FROM historico_alteracoes ORDER BY id",
+        "SELECT * FROM sqlite_sequence WHERE name = 'compras'",
+    )
+    antes = [_le(caminho, q) for q in consultas]
+    forma = _forma(caminho, "compras")
+
+    db.init(caminho)
+
+    assert [_le(caminho, q) for q in consultas] == antes
+    assert _forma(caminho, "compras") == forma
+    assert antes[2] == [{"name": "compras", "seq": 7}]

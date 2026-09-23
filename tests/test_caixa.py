@@ -457,6 +457,29 @@ def test_alterar_capsulas_e_quem_pagou_uma_compra(cliente):
     assert (m["paga_pela_caixa"], m["editada"]) == (True, True)
 
 
+def test_apagar_compra_fica_no_historico_e_o_proximo_id_nao_a_herda(cliente):
+    """AUTOINCREMENT em compras.id: apagar a mais recente não deixa a
+    seguinte herdar o id nem o histórico de quem a apagou."""
+    a = regista(cliente, "Ana")
+    a.post("/api/compras", json={"capsulas": 10, "custo_cent": 250})
+    primeira = a.get("/api/escritorio").json()["compras"][0]["id"]
+    a.patch(f"/api/compras/{primeira}", json={"custo_cent": 300})
+
+    assert a.delete(f"/api/compras/{primeira}").json() == {"ok": True}
+
+    a.post("/api/compras", json={"capsulas": 5, "custo_cent": 125})
+    segunda = a.get("/api/escritorio").json()["compras"][0]
+    assert segunda["id"] != primeira
+    assert segunda["editada"] is False
+
+    alteracoes = _alteracoes(a, "compra", primeira)
+    assert [(h["campo"], h["antes"], h["depois"]) for h in alteracoes] == [
+        ("custo_cent", "250", "300"),
+        ("apagada", "0", "1"),
+    ]
+    assert alteracoes[-1]["utilizador"] == "Ana"
+
+
 def test_com_o_stock_ja_negativo_corrigir_o_custo_passa(cliente):
     """Como em produção: cafés marcados antes de registada a caixa deixam o
     stock abaixo de zero, e a oferta corrige-se na app na mesma."""

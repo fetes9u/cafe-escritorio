@@ -250,13 +250,13 @@ cartão de saldo com o mesmo tamanho. A página continua sem scroll em 375×812.
 - Frase: `Deves 2,50 €` (saldo < 0), `Tens 1,00 € a teu favor` (> 0),
   `Contas certas` (= 0). Qualquer saldo negativo diz "Deves", incluindo o de quem
   recebeu dinheiro dos outros: esse dinheiro é devido ao pote.
-- Com sugestão: `Sugestão: paga 2,50 € ao Ricardo` e o botão **Paguei por MB WAY**.
+- Com sugestão: `Sugestão: paga 2,50 € a Ricardo` e o botão **Paguei por MB WAY**.
   Sem dívida, o botão fica na mesma, mais discreto (pode-se pagar adiantado).
 - O botão troca o conteúdo do cartão por um formulário: atalhos `5 €`, `10 €`,
   `20 €` e `2,50 €` (o valor sugerido, se houver), um campo livre, e **A quem**
   (lista de `/api/utilizadores` sem o próprio, com o credor sugerido já
   escolhido). Guardar → `POST /api/transferencias` → toast
-  `Pagamento registado; o Ricardo foi avisado.` → recarrega `/api/eu`.
+  `Pagamento registado. Notificação enviada a Ricardo.` → recarrega `/api/eu`.
 - Com `por_confirmar` não vazio: `2 pagamentos por confirmar`, cada um com
   `Pedro · 5,00 € · ontem` e os botões **✓** e **Não recebi**.
 - Pagar precisa de rede: sem rede, o botão mostra `Precisas de rede para registar
@@ -269,11 +269,11 @@ cartão de saldo com o mesmo tamanho. A página continua sem scroll em 375×812.
 Um seletor `Cafés | Dinheiro` por cima. "Cafés" é o calendário que já existe.
 "Dinheiro" usa `/api/movimentos`: o saldo no topo e depois a lista.
 
-- `Pagaste 5,00 € ao Ricardo · 22/09`, com **Anular** enquanto não estiver
+- `Pagaste 5,00 € a Ricardo · 22/09`, com **Anular** enquanto não estiver
   confirmado nem anulado.
-- `Recebeste 5,00 € do Pedro · 22/09`, com **✓** e **Não recebi** nas mesmas
+- `Recebeste 5,00 € de Pedro · 22/09`, com **✓** e **Não recebi** nas mesmas
   condições.
-- Anuladas riscadas, com `anulado por ti` ou `anulado pelo Ricardo`.
+- Anuladas riscadas, com `anulado por ti` ou `anulado por Ricardo`.
 - `Compraste 50 cápsulas · 15,00 €`.
 - Uma linha por mês: `Setembro: 42 cafés, −10,50 €`.
 

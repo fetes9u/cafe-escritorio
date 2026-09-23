@@ -413,7 +413,7 @@ function desenharEu() {
 
   $("saldo-frase").textContent = fraseSaldo(eu.saldo_cent);
   if (eu.sugestao) {
-    $("saldo-sugestao").textContent = `Sugestão: paga ${euros(eu.sugestao.valor_cent)} ao ${eu.sugestao.nome}`;
+    $("saldo-sugestao").textContent = `Sugestão: paga ${euros(eu.sugestao.valor_cent)} a ${eu.sugestao.nome}`;
     $("saldo-sugestao").hidden = false;
     $("btn-pagar").classList.remove("discreto");
   } else {
@@ -587,7 +587,7 @@ $("form-pagar").onsubmit = async (e) => {
     const nome = $("pagar-recebedor").selectedOptions[0].textContent;
     $("form-pagar").hidden = true;
     $("saldo-vista").hidden = false;
-    toast(`Pagamento registado; o ${nome} foi avisado.`);
+    toast(`Pagamento registado. Notificação enviada a ${nome}.`);
     await recarregarEu();
   } catch (erro) {
     if (erro && erro.rede) toast("Precisas de rede para registar um pagamento.", true);
@@ -820,11 +820,11 @@ function desenharDinheiro() {
       li.innerHTML = `<span>Compraste ${plural(it.dado.capsulas, "cápsula", "cápsulas")} · ${euros(it.dado.custo_cent)} · ${dataCurta(it.dado.em)}</span>`;
     } else {
       const t = it.dado;
-      const texto = t.sentido === "paguei" ? `Pagaste ${euros(t.valor_cent)} ao ${t.outro}` : `Recebeste ${euros(t.valor_cent)} do ${t.outro}`;
+      const texto = t.sentido === "paguei" ? `Pagaste ${euros(t.valor_cent)} a ${t.outro}` : `Recebeste ${euros(t.valor_cent)} de ${t.outro}`;
       let acoes;
       if (t.anulada_em) {
         li.className = "anulada";
-        acoes = `<span class="nota">${t.anulada_por === eu.utilizador.id ? "anulado por ti" : `anulado pelo ${t.outro}`}</span>`;
+        acoes = `<span class="nota">${t.anulada_por === eu.utilizador.id ? "anulado por ti" : `anulado por ${t.outro}`}</span>`;
       } else if (t.confirmada_em) {
         acoes = "";
       } else if (t.sentido === "paguei") {

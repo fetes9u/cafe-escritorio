@@ -85,8 +85,10 @@
     </div>
     <form id="form-pagar" hidden>
       <div id="pagar-chips" class="grelha-chips"></div>
-      <label>Outro valor (€) <input id="pagar-livre" type="number" step="0.01" min="0.01" max="1000"></label>
-      <label>A quem <select id="pagar-recebedor" required></select></label>
+      <div class="linha">
+        <label>Outro valor (€) <input id="pagar-livre" type="number" step="0.01" min="0.01" max="1000"></label>
+        <label>A quem <select id="pagar-recebedor" required></select></label>
+      </div>
       <button type="submit">Guardar</button>
       <button type="button" id="pagar-cancelar" class="ligacao">Cancelar</button>
     </form>

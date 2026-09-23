@@ -70,10 +70,18 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 .grelha-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 0; }
 .chip { padding: 8px 14px; border: 1px solid var(--linha); border-radius: 20px; background: #fff; color: var(--texto); }
 .chip.selecionada { background: var(--cafe); color: #fff; border-color: var(--cafe); }
+/* keeps the four amount chips on one row at 375px: shared width, tighter padding/font, still >= 36px tall to tap */
+#pagar-chips { flex-wrap: nowrap; }
+#pagar-chips .chip { flex: 1; padding: 8px 4px; font-size: .85rem; min-height: 36px; text-align: center; }
+/* "Outro valor" and "A quem" side by side even though each wraps a full-width input/select */
+#form-pagar .linha { flex-wrap: nowrap; }
+#form-pagar .linha label { min-width: 0; }
 #por-confirmar { margin-top: 10px; }
 #por-confirmar-titulo { margin: 0 0 4px; font-weight: 600; color: var(--texto); }
 #por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-li.anulada span:first-child { text-decoration: line-through; color: var(--cinza); }
+#dinheiro-lista li { flex-wrap: wrap; }
+/* > (not a descendant selector) so this only ever hits the movement text, never the nested span.nota inside the actions span */
+li.anulada > span:first-child { text-decoration: line-through; color: var(--cinza); }
 
 .hist-selector { display: flex; gap: 14px; margin: 0 0 10px; }
 .hist-selector button { text-decoration: none; padding: 4px 0; }

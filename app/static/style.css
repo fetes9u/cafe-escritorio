@@ -27,7 +27,7 @@ main { max-width: 520px; margin: 0 auto; padding: 16px; padding-bottom: max(24px
 .grelha button:active { background: var(--linha); }
 
 button { font: inherit; cursor: pointer; }
-button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia) {
+button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia):not(.chip) {
   background: var(--cafe); color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; }
 button:disabled { opacity: .5; }
 .secundario { display: block; width: 100%; margin-top: 16px; padding: 12px; background: transparent; color: var(--cafe); border: 1px dashed var(--cafe-claro); border-radius: 12px; }
@@ -56,14 +56,29 @@ table { width: 100%; border-collapse: collapse; background: #fff; border-radius:
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--linha); font-size: .95rem; }
 th { color: var(--cinza); font-weight: 500; }
 .num { text-align: right; white-space: nowrap; }
-td .ligacao { font-size: .85rem; }
-.pago { color: var(--ok); }
-.porpagar { color: var(--aviso); }
+.saldo-neg { color: var(--aviso); }
+.saldo-pos { color: var(--ok); }
 details summary { font-weight: 600; cursor: pointer; }
 ul { list-style: none; padding: 0; margin: 8px 0 0; }
 li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--linha); font-size: .95rem; }
 #form-compra input { flex: 1; min-width: 90px; }
 #form-config { flex-direction: column; align-items: stretch; }
+
+/* saldo e pagamentos por MB WAY */
+#btn-pagar { display: block; width: 100%; }
+#btn-pagar.discreto { background: transparent; color: var(--cafe-claro); border: 1px dashed var(--cafe-claro); }
+.grelha-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 0; }
+.chip { padding: 8px 14px; border: 1px solid var(--linha); border-radius: 20px; background: #fff; color: var(--texto); }
+.chip.selecionada { background: var(--cafe); color: #fff; border-color: var(--cafe); }
+#por-confirmar { margin-top: 10px; }
+#por-confirmar-titulo { margin: 0 0 4px; font-weight: 600; color: var(--texto); }
+#por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+li.anulada span:first-child { text-decoration: line-through; color: var(--cinza); }
+
+.hist-selector { display: flex; gap: 14px; margin: 0 0 10px; }
+.hist-selector button { text-decoration: none; padding: 4px 0; }
+.hist-selector button.activa { color: var(--cafe); font-weight: 700; }
+#dinheiro-saldo { font-size: 1.1rem; font-weight: 600; color: var(--texto); }
 
 #form-notif-prefs label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
 #form-notif-prefs input[type="checkbox"] { width: auto; margin-top: 0; }

@@ -7,10 +7,12 @@ exits non-zero on the first failure.
 
 It answers a question the unit tests cannot answer: does the image actually work
 when a person walks through it, including the parts where the Python server and
-the JavaScript client have to agree on a JSON field name. Every field name the
-client reads is extracted from the client source at run time and never
+the JavaScript client have to agree on a JSON field name. Where a check is about
+that agreement (the VAPID key field, the preference toggles, the push payload),
+the field names are extracted from the client source at run time and never
 hardcoded here, so a rename on either side fails this gate instead of failing a
-colleague in production.
+colleague in production. The journey steps (3 and 7) use the names of the API
+contract directly; tests/test_contrato_api.py binds those to the client.
 
 It NEVER touches production: the container is created here, given a freshly
 generated VAPID keypair, an explicit environment (no ambient CAFE_* variables

@@ -64,72 +64,16 @@ def test_resumo_stock_avisa_quando_nao_chega():
     assert r["chega_ao_fim_do_mes"] is True
 
 
-# ---------- preço médio do armário ----------
-
-def test_preco_medio_arredonda_ao_centimo():
-    # 18,50 € por recuperar e 60 cápsulas no armário: 30,83 cêntimos
-    assert logic.preco_corrente(1850, 60, 25) == 31
-
-
-def test_preco_com_armario_vazio_usa_o_ultimo_preco():
-    assert logic.preco_corrente(0, 0, 31) == 31
-    assert logic.preco_corrente(500, -3, 27) == 27
-
-
-def test_preco_nunca_e_negativo():
-    assert logic.preco_corrente(-200, 10, 25) == 0
-
-
-def test_preco_meio_centimo_sobe():
-    assert logic.preco_corrente(25, 2, 99) == 13  # 12,5
-    assert logic.preco_corrente(24, 2, 99) == 12
-
-
-def test_exemplo_da_revisao_fecha_o_pote_ao_centimo():
-    """Caixa de 100 a 25 €, 50 bebidas, caixa de 10 a 6 €, e bebe-se até o
-    armário ficar vazio. Com o custo médio, o valor por recuperar nunca fica
-    negativo pelo caminho e acaba exactamente em zero."""
-    custo, capsulas, cobrado, bebidos = 0, 0, 0, 0
-    ultimo = 25
-
-    def bebe():
-        nonlocal cobrado, bebidos, ultimo
-        preco = logic.preco_corrente(custo - cobrado, capsulas - bebidos, ultimo)
-        cobrado += preco
-        bebidos += 1
-        ultimo = preco
-        assert custo - cobrado >= 0
-
-    custo, capsulas = 2500, 100
-    for _ in range(50):
-        bebe()
-    assert cobrado == 1250
-
-    custo, capsulas = custo + 600, capsulas + 10
-    assert logic.preco_corrente(custo - cobrado, capsulas - bebidos, ultimo) == 31
-    while capsulas - bebidos > 0:
-        bebe()
-    assert bebidos == 110
-    assert custo - cobrado == 0
-
-
-# ---------- sugestão de a quem pagar ----------
+# ---------- sugestão de pagamento ----------
 
 def test_sugestao_so_para_quem_deve():
-    assert logic.sugestao_pagamento(0, [(1, "Ana", 500)]) is None
-    assert logic.sugestao_pagamento(100, [(1, "Ana", 500)]) is None
+    assert logic.sugestao_pagamento(0, "Ana") is None
+    assert logic.sugestao_pagamento(100, "Ana") is None
 
 
-def test_sugestao_sem_credor_positivo_e_nula():
-    assert logic.sugestao_pagamento(-300, [(1, "Ana", 0), (2, "Bea", -50)]) is None
+def test_sugestao_sem_responsavel_e_nula():
+    assert logic.sugestao_pagamento(-300, None) is None
 
 
-def test_sugestao_escolhe_o_maior_credor_e_limita_ao_que_tem_a_receber():
-    outros = [(1, "Ana", 200), (2, "Bea", 700), (3, "Rui", 50)]
-    assert logic.sugestao_pagamento(-300, outros) == {"utilizador_id": 2, "nome": "Bea", "valor_cent": 300}
-    assert logic.sugestao_pagamento(-900, outros) == {"utilizador_id": 2, "nome": "Bea", "valor_cent": 700}
-
-
-def test_sugestao_em_empate_vai_pelo_nome():
-    outros = [(1, "rui", 400), (2, "Ana", 400)]
-    assert logic.sugestao_pagamento(-100, outros)["nome"] == "Ana"
+def test_sugestao_e_pagar_a_caixa_tudo_o_que_se_deve():
+    assert logic.sugestao_pagamento(-250, "Ana") == {"para_caixa": True, "nome": "Caixa (Ana)", "valor_cent": 250}

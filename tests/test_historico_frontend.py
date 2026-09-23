@@ -136,6 +136,65 @@ def test_the_fields_the_client_reads_exist_in_the_real_responses(cliente):
     assert len(hist["hoje"]) == 10 and hist["hoje"][:7] == hist["mes"]  # "YYYY-MM-DD", compared as-is by the client
 
 
+# ---------- histórico: separador Cafés | Dinheiro ----------
+
+def test_index_has_the_hist_selector_with_both_options():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert 'id="hist-selector"' in html
+    assert 'data-hist-vista="cafes"' in html
+    assert 'data-hist-vista="dinheiro"' in html
+    assert 'id="hist-dinheiro"' in html
+
+
+def test_cafes_is_the_default_hist_subview():
+    """The switch must default to Cafés: it is a class on the button in the
+    markup, and the nav dispatcher resets to it every time the tab is opened."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    start = html.index('data-hist-vista="cafes"')
+    end = html.index(">", start)
+    assert "activa" in html[start:end]
+    assert html.index('id="hist-dinheiro"') > 0 and 'hidden' in html[html.index('id="hist-dinheiro"'):html.index('id="hist-dinheiro"') + 40]
+
+    js = _app_js()
+    inicio = js.index('$("abas").onclick')
+    bloco = js[inicio:js.index("\n};", inicio)]
+    assert 'selecionarHistVista("cafes")' in bloco
+
+
+def test_app_fetches_movimentos_for_the_dinheiro_subview():
+    js = _app_js()
+    corpo = _funcao(js, "carregarDinheiro")
+    assert '"/movimentos"' in corpo
+    assert 'guardarInstantaneo("movimentos"' in corpo
+
+
+def test_dinheiro_reads_the_fields_the_contract_promises():
+    """Binds this client to every field section 4.5 promises for
+    GET /api/movimentos, so a dropped field breaks here, not silently."""
+    js = _app_js()
+    assert "function desenharDinheiro()" in js
+    inicio = js.index("function desenharDinheiro()")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    for campo in ("d.saldo_cent", "d.transferencias", "d.compras", "d.meses"):
+        assert campo in corpo, f"desenharDinheiro must read {campo}"
+    for campo in ("t.sentido", "t.outro", "t.valor_cent", "t.em", "t.confirmada_em", "t.anulada_em", "t.anulada_por"):
+        assert campo in corpo, f"desenharDinheiro must read {campo} off a transferencia"
+    for campo in ("it.dado.capsulas", "it.dado.custo_cent"):
+        assert campo in corpo, f"desenharDinheiro must read {campo} off a compra"
+    for campo in ("m.mes", "m.cafes", "m.valor_cent"):
+        assert campo in corpo, f"desenharDinheiro must read {campo} off a mes"
+
+
+def test_dinheiro_lista_sends_the_right_verb_for_each_action():
+    js = _app_js()
+    marcador = '$("dinheiro-lista").onclick'
+    assert marcador in js
+    inicio = js.index(marcador)
+    bloco = js[inicio:js.index("\n};", inicio)]
+    assert "/transferencias/" in bloco
+    assert '"confirmar" : "anular"' in bloco
+
+
 # ---------- service worker ----------
 
 def test_cache_version_is_v7():

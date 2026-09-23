@@ -183,6 +183,75 @@ def test_desfazer_fica_desativado_sem_fila_e_sem_rede():
     assert "razao" in corpo, "the reason for a disabled undo must be shown on screen, not just implied"
 
 
+# ---------- saldo: the optimistic coffee update also moves saldo_cent ----------
+
+def test_marcar_cafe_desconta_o_saldo_de_forma_otimista():
+    js = _app_js()
+    bloco = _handler(js, "btn-cafe")
+    assert "eu.saldo_cent -= eu.preco_cent" in bloco, (
+        "marking a coffee optimistically must also debit saldo_cent, per spec 5.1"
+    )
+
+
+def test_desfazer_offline_repoe_o_saldo():
+    js = _app_js()
+    bloco = _handler(js, "btn-desfazer")
+    pos_fila_if = bloco.index("if (fila.length)")
+    ramo_fila, _ = _bloco_balanceado(bloco, bloco.index("{", pos_fila_if))
+    assert "eu.saldo_cent += eu.preco_cent" in ramo_fila, (
+        "undoing a queued coffee must restore the saldo_cent the optimistic update debited"
+    )
+
+
+# ---------- pagamentos por MB WAY: never queued, always need the network ----------
+
+def test_pagar_por_mbway_nunca_toca_na_fila_offline():
+    """Paying needs network per spec 5.1: an offline payment must show the
+    spec's message and never be queued like a coffee is."""
+    js = _app_js()
+    inicio = js.index("async function abrirFormPagar(")
+    fim = js.index("\n}", inicio)
+    abrir = js[inicio:fim]
+    assert "navigator.onLine" in abrir
+    assert "Precisas de rede para registar um pagamento." in abrir
+    assert 'idbPut("fila"' not in abrir
+
+    # _handler() only matches .onclick; the pay form uses .onsubmit, so extract it directly.
+    marcador = '$("form-pagar").onsubmit'
+    assert marcador in js
+    pos = js.index(marcador)
+    chaveta = js.index("{", pos)
+    submit_bloco, _ = _bloco_balanceado(js, chaveta)
+    assert 'idbPut("fila"' not in submit_bloco
+    assert "erro.rede" in submit_bloco
+    assert "Precisas de rede para registar um pagamento." in submit_bloco
+
+
+def test_pagamento_registado_recarrega_eu():
+    js = _app_js()
+    marcador = '$("form-pagar").onsubmit'
+    pos = js.index(marcador)
+    chaveta = js.index("{", pos)
+    submit_bloco, _ = _bloco_balanceado(js, chaveta)
+    assert '"/transferencias"' in submit_bloco
+    assert "recarregarEu()" in submit_bloco
+
+
+# ---------- snapshot guard: an old-shape snapshot is treated as absent ----------
+
+def test_entrar_trata_fotografia_sem_saldo_cent_como_inexistente():
+    js = _app_js()
+    corpo = _funcao(js, "entrar")
+    assert "foto.dados.saldo_cent === undefined" in corpo
+    assert "!foto || foto.dados.saldo_cent === undefined" in corpo
+
+
+def test_escritorio_trata_fotografia_sem_pote_como_inexistente():
+    js = _app_js()
+    corpo = _funcao(js, "carregarEscritorio")
+    assert "!foto || !foto.dados.pote" in corpo
+
+
 # ---------- service worker: cache guard intact, cache version bumped ----------
 
 def test_service_worker_continua_a_nunca_cachear_api():

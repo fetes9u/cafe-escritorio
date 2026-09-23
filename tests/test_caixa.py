@@ -4,6 +4,9 @@ Como em test_saldos.py, os efeitos lêem-se de volta (/api/eu,
 /api/escritorio, /api/transferencias, /api/historico-alteracoes), nunca só
 pelo código de estado da escrita.
 """
+from datetime import datetime, timedelta, timezone
+
+from app import logic
 from tests.conftest import regista
 from tests.test_saldos import _enviados, push  # noqa: F401 (push é uma fixture)
 
@@ -366,6 +369,42 @@ def test_editar_um_confirmado_volta_a_por_confirmar_com_historico(cliente, relog
     ]
     m = b.get("/api/movimentos").json()["transferencias"][0]
     assert (m["outro"], m["editada"]) == ("Rui", True)
+
+
+def test_uma_edicao_e_um_so_instante(cliente, monkeypatch):
+    """Uma PATCH que muda o valor e o destino (da caixa para uma pessoa) de um
+    pagamento já confirmado grava quatro linhas de histórico (valor_cent,
+    recebedor_id, para_caixa, confirmada): todas têm de repetir o mesmo `em`
+    e o mesmo utilizador, porque são UM pedido, não quatro. O `relogio` da
+    conftest fixa sempre o mesmo instante e por isso não apanhava uma
+    regressão (um novo logic.agora() a cada regista_alteracao() passava na
+    mesma); aqui o relógio avança a cada chamada, para uma versão que voltasse
+    a tirar o instante dentro de regista_alteracao() continuar a falhar."""
+    tique = {"n": 0}
+
+    def _agora_a_avancar():
+        tique["n"] += 1
+        return datetime(2026, 9, 11, 9, 0, tzinfo=timezone.utc) + timedelta(seconds=tique["n"])
+
+    a = regista(cliente, "Ana")
+    b = regista(cliente, "Bea")
+    ids = _ids(cliente)
+    _guarda(a, ids["Ana"])
+    t = _a_caixa(b, 500).json()["id"]
+    assert a.post(f"/api/transferencias/{t}/confirmar").status_code == 200
+
+    monkeypatch.setattr(logic, "agora", _agora_a_avancar)
+    r = b.patch(f"/api/transferencias/{t}",
+               json={"valor_cent": 600, "para_caixa": False, "recebedor_id": ids["Ana"]})
+    assert r.status_code == 200, r.text
+
+    # exclui a linha "confirmada" da Ana, gravada antes (com o relógio pinado
+    # da fixture `relogio`), pelo `confirmar` inicial; só o PATCH da Bea é o
+    # pedido sob teste.
+    da_edicao = [a_ for a_ in _alteracoes(b, "transferencia", t) if a_["utilizador"] == "Bea"]
+    assert {a_["campo"] for a_ in da_edicao} == {"valor_cent", "recebedor_id", "para_caixa", "confirmada"}
+    assert len(da_edicao) == 4
+    assert len({a_["em"] for a_ in da_edicao}) == 1
 
 
 def test_anular_grava_historico_mas_nao_marca_editada(cliente):

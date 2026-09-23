@@ -746,10 +746,11 @@ def alterar_compra(compra_id: int, body: AlteracaoCompra, u: dict = Depends(util
             raise HTTPException(409, "Não se pode: o stock ficaria negativo.")
         if novo["paga_pela_caixa"] and not compra["paga_pela_caixa"]:
             _exige_responsavel(c)
+        em = logic.agora().isoformat()
         for campo in ("custo_cent", "capsulas", "paga_pela_caixa"):
             antes = bool(compra[campo]) if campo == "paga_pela_caixa" else compra[campo]
             if novo[campo] != antes:
-                db.regista_alteracao(c, "compra", compra_id, campo, antes, novo[campo], u["id"])
+                db.regista_alteracao(c, "compra", compra_id, campo, antes, novo[campo], u["id"], em=em)
         c.execute(
             "UPDATE compras SET custo_cent = ?, capsulas = ?, paga_pela_caixa = ?, "
             "custo_estimado = CASE WHEN ? THEN 0 ELSE custo_estimado END WHERE id = ?",
@@ -772,7 +773,8 @@ def apagar_compra(compra_id: int, background_tasks: BackgroundTasks, u: dict = D
             raise HTTPException(409, "Não se pode apagar: o stock ficaria negativo.")
         # Fica no histórico antes de apagar, para o rasto não desaparecer com a
         # linha (AUTOINCREMENT impede que uma compra nova herde este id).
-        db.regista_alteracao(c, "compra", compra_id, "apagada", False, True, u["id"])
+        db.regista_alteracao(c, "compra", compra_id, "apagada", False, True, u["id"],
+                             em=logic.agora().isoformat())
         c.execute("DELETE FROM compras WHERE id = ?", (compra_id,))
         _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
     return {"ok": True}
@@ -877,14 +879,15 @@ def confirmar_transferencia(transferencia_id: int, u: dict = Depends(utilizador_
         if u["id"] != recebe:
             raise HTTPException(403, "Esse pagamento não é contigo.")
         _exige_aberta(t)
+        em = logic.agora().isoformat()
         cur = c.execute(
             "UPDATE transferencias SET confirmada_em = ? "
             "WHERE id = ? AND confirmada_em IS NULL AND anulada_em IS NULL",
-            (logic.agora().isoformat(), transferencia_id),
+            (em, transferencia_id),
         )
         if cur.rowcount != 1:
             raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
-        db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", False, True, u["id"])
+        db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", False, True, u["id"], em=em)
     return {"ok": True}
 
 
@@ -898,14 +901,15 @@ def anular_transferencia(transferencia_id: int, background_tasks: BackgroundTask
         if u["id"] not in (paga, recebe):
             raise HTTPException(403, "Esse pagamento não é contigo.")
         _exige_aberta(t)
+        em = logic.agora().isoformat()
         cur = c.execute(
             "UPDATE transferencias SET anulada_em = ?, anulada_por = ? "
             "WHERE id = ? AND confirmada_em IS NULL AND anulada_em IS NULL",
-            (logic.agora().isoformat(), u["id"], transferencia_id),
+            (em, u["id"], transferencia_id),
         )
         if cur.rowcount != 1:
             raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
-        db.regista_alteracao(c, "transferencia", transferencia_id, "anulada", False, True, u["id"])
+        db.regista_alteracao(c, "transferencia", transferencia_id, "anulada", False, True, u["id"], em=em)
     valor = _euros(t["valor_cent"])
     if u["id"] == paga:
         _avisar_lado(background_tasks, f"{u['nome']} anulou o pagamento de {valor} €", recebe, u["id"])
@@ -951,17 +955,20 @@ def alterar_transferencia(transferencia_id: int, body: AlteracaoTransferencia, b
         mudou = [campo for campo in CAMPOS_EDITAVEIS_TRANSFERENCIA if novo[campo] != antes[campo]]
         if not mudou:
             raise HTTPException(400, "Nada mudou.")
+        em = logic.agora().isoformat()
         for campo in mudou:
-            db.regista_alteracao(c, "transferencia", transferencia_id, campo, antes[campo], novo[campo], u["id"])
+            db.regista_alteracao(c, "transferencia", transferencia_id, campo, antes[campo], novo[campo], u["id"],
+                                 em=em)
         _, recebe = _lados({**t, **novo}, responsavel["id"] if responsavel else None)
         confirmada_em = t["confirmada_em"]
         if paga == recebe:
             if not confirmada_em:
-                confirmada_em = logic.agora().isoformat()
-                db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", False, True, u["id"])
+                confirmada_em = em
+                db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", False, True, u["id"],
+                                     em=em)
         elif confirmada_em:
             confirmada_em = None
-            db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", True, False, u["id"])
+            db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", True, False, u["id"], em=em)
         c.execute(
             "UPDATE transferencias SET valor_cent = ?, recebedor_id = ?, para_caixa = ?, confirmada_em = ? "
             "WHERE id = ?",
@@ -1094,6 +1101,7 @@ def alterar_config(body: Config, u: dict = Depends(utilizador_actual)):
         if body.caixa_responsavel_id is not None:
             _existe_utilizador(c, body.caixa_responsavel_id)
         antes = _config(c)
+        em = logic.agora().isoformat()
         for chave in ("preco_cent", "stock_baixo", "caixa_responsavel_id"):
             novo = getattr(body, chave)
             if chave not in enviados or novo == antes[chave]:
@@ -1102,7 +1110,7 @@ def alterar_config(body: Config, u: dict = Depends(utilizador_actual)):
                 c.execute("DELETE FROM config WHERE chave = ?", (chave,))
             else:
                 db.set_config(c, chave, str(novo))
-            db.regista_alteracao(c, "config", None, chave, antes[chave], novo, u["id"])
+            db.regista_alteracao(c, "config", None, chave, antes[chave], novo, u["id"], em=em)
     return {"ok": True}
 
 

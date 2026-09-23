@@ -200,10 +200,12 @@ def _converte(c: sqlite3.Connection) -> None:
             )
         # O preço médio chegou a zero e deixou cafés de graça: passam ao preço
         # fixo, com rasto. O preço configurado nunca é 0, portanto isto não
-        # volta a encontrar nada no arranque seguinte.
+        # volta a encontrar nada no arranque seguinte. Uma só execução da
+        # migração = um só instante em todas as linhas que ela grava.
+        em_migracao = logic.agora().isoformat()
         for cafe in c.execute("SELECT id FROM cafes WHERE valor_cent = 0 ORDER BY id").fetchall():
             c.execute("UPDATE cafes SET valor_cent = ? WHERE id = ?", (preco, cafe["id"]))
-            regista_alteracao(c, "cafe", cafe["id"], "valor_cent", 0, preco, None)
+            regista_alteracao(c, "cafe", cafe["id"], "valor_cent", 0, preco, None, em=em_migracao)
         # Com as chaves desligadas, nenhuma escrita desta transacção é
         # verificada em tempo real (não só as das tabelas reconstruídas), por
         # isso a verificação à mão cobre a base toda.
@@ -301,13 +303,16 @@ def set_config(c: sqlite3.Connection, chave: str, valor: str) -> None:
 
 
 def regista_alteracao(c: sqlite3.Connection, entidade: str, entidade_id: int | None, campo: str,
-                      antes, depois, utilizador_id: int | None) -> None:
+                      antes, depois, utilizador_id: int | None, *, em: str) -> None:
     """Uma linha do histórico. Os valores ficam como texto (booleanos como
-    "0"/"1"); None fica NULL. utilizador_id None = o sistema."""
+    "0"/"1"); None fica NULL. utilizador_id None = o sistema. `em` é sempre o
+    instante do pedido (ou da execução da migração) que despoletou esta
+    linha, nunca um novo `logic.agora()` aqui dentro: as várias linhas
+    gravadas por UM pedido têm de repetir o mesmo instante."""
     c.execute(
         "INSERT INTO historico_alteracoes (entidade, entidade_id, campo, antes, depois, utilizador_id, em) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (entidade, entidade_id, campo, _texto(antes), _texto(depois), utilizador_id, logic.agora().isoformat()),
+        (entidade, entidade_id, campo, _texto(antes), _texto(depois), utilizador_id, em),
     )
 
 

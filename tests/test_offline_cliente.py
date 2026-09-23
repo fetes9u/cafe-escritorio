@@ -227,6 +227,14 @@ def test_pagar_por_mbway_nunca_toca_na_fila_offline():
     assert "Precisas de rede para registar um pagamento." in submit_bloco
 
 
+def test_apenas_o_cafe_e_posto_na_fila_offline():
+    """Spec item 6: payments, edits and settings all need the network and
+    must never be queued like a coffee is. `idbPut("fila", ...)` must appear
+    exactly once in the whole client, at the coffee button."""
+    js = _app_js()
+    assert js.count('idbPut("fila"') == 1
+
+
 def test_pagamento_registado_recarrega_eu():
     js = _app_js()
     marcador = '$("form-pagar").onsubmit'
@@ -246,10 +254,22 @@ def test_entrar_trata_fotografia_sem_saldo_cent_como_inexistente():
     assert "!foto || foto.dados.saldo_cent === undefined" in corpo
 
 
-def test_escritorio_trata_fotografia_sem_pote_como_inexistente():
+def test_entrar_trata_fotografia_sem_caixa_como_inexistente():
+    """A pre-caixa snapshot of /api/eu has no `caixa` key: it must be treated
+    as absent too, or the keeper line and the payment form could draw from
+    the old shape."""
+    js = _app_js()
+    corpo = _funcao(js, "entrar")
+    assert "foto.dados.caixa === undefined" in corpo
+
+
+def test_escritorio_trata_fotografia_sem_caixa_como_inexistente():
+    """`pote` was removed from /api/escritorio in favour of `caixa` (spec
+    4.8): a snapshot from before that change has no `caixa` key and must be
+    treated as absent, not checked against the field that no longer exists."""
     js = _app_js()
     corpo = _funcao(js, "carregarEscritorio")
-    assert "!foto || !foto.dados.pote" in corpo
+    assert "!foto || foto.dados.caixa === undefined" in corpo
 
 
 # ---------- service worker: cache guard intact, cache version bumped ----------

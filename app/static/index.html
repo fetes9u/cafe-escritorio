@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Café do escritório</title>
-<link rel="stylesheet" href="/static/style.css?v=7">
+<link rel="stylesheet" href="/static/style.css?v=8">
 <link rel="manifest" href="/static/manifest.json">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png">
@@ -75,7 +75,7 @@
 
   <div class="cartao" id="cartao-saldo">
     <div id="saldo-vista">
-      <div class="linha"><b id="saldo-frase"></b></div>
+      <div class="linha"><b id="saldo-frase"></b><span id="caixa-contigo" class="nota" hidden></span></div>
       <p id="saldo-sugestao" class="nota" hidden></p>
       <button type="button" id="btn-pagar">Paguei por MB WAY</button>
       <div id="por-confirmar" hidden>
@@ -134,7 +134,7 @@
     <label>Mês <select id="sel-mes"></select></label>
     <b id="esc-total"></b>
   </div>
-  <p id="esc-pote" class="nota"></p>
+  <p id="esc-caixa" class="nota"></p>
 
   <table id="tabela">
     <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">€ do mês</th><th class="num">Saldo</th></tr></thead>
@@ -143,24 +143,41 @@
 
   <div id="esc-stock" class="faixa"></div>
 
+  <details class="cartao" id="pagamentos-secao" open>
+    <summary>Pagamentos</summary>
+    <p id="pagamentos-aviso" class="nota aviso-fotografia" hidden></p>
+    <ul id="pagamentos-lista"></ul>
+  </details>
+
   <details class="cartao" open>
     <summary>Entradas de cápsulas</summary>
     <form id="form-compra" class="linha">
       <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="cápsulas" required>
       <input id="compra-custo" type="number" step="0.01" min="0.01" max="10000" placeholder="custo (€)" required>
+      <label>Paga com
+        <select id="compra-paga-com">
+          <option value="caixa">Caixa</option>
+          <option value="bolso" selected>Do meu bolso</option>
+          <option value="oferta">Oferta</option>
+        </select>
+      </label>
       <input id="compra-nota" maxlength="80" placeholder="nota (opcional)">
       <button type="submit">Registar entrada</button>
     </form>
-    <p id="compra-preview" class="nota" hidden></p>
     <ul id="compras"></ul>
   </details>
 
   <details class="cartao">
     <summary>Definições</summary>
+    <p id="cfg-aviso" class="nota aviso-fotografia" hidden></p>
     <form id="form-config" class="linha">
+      <label>Preço por café (€) <input id="cfg-preco" type="number" step="0.01" min="0.01" max="100" required></label>
       <label>Aviso de stock baixo (cápsulas) <input id="cfg-limiar" type="number" min="0" required></label>
+      <label>Quem guarda a caixa <select id="cfg-caixa-responsavel"></select></label>
       <button type="submit">Guardar</button>
     </form>
+    <button type="button" id="cfg-ver-alteracoes" class="ligacao">ver alterações</button>
+    <ul id="cfg-historico-lista" class="historico-lista" hidden></ul>
   </details>
 
   <details class="cartao" id="notif-secao" open>
@@ -190,6 +207,6 @@
   <button type="button" id="instalar-fechar" class="ligacao">Dispensar</button>
 </div>
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>

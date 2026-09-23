@@ -8,6 +8,7 @@ let escritorio = null;   // resposta de /api/escritorio
 let historico = null;    // resposta de /api/historico (o mês visível)
 let histDia = null;      // dia seleccionado no calendário, "YYYY-MM-DD"
 let histPorDia = new Map(); // dia -> { n, horas: [{ hora, fila }] }, servidor mais fila offline
+let dinheiro = null;     // resposta de /api/movimentos (separador Histórico → Dinheiro)
 
 // ---------- utilidades ----------
 
@@ -24,6 +25,27 @@ function nomeMes(ym) {
   return `${meses[m - 1]} ${a}`;
 }
 function plural(n, s, p) { return `${n} ${n === 1 ? s : p}`; }
+
+// "Deves 2,50 €" / "Tens 1,00 € a teu favor" / "Contas certas": any negative
+// balance says "Deves", including someone else's money still owed to the pot.
+function fraseSaldo(cent) {
+  if (cent < 0) return `Deves ${euros(-cent)}`;
+  if (cent > 0) return `Tens ${euros(cent)} a teu favor`;
+  return "Contas certas";
+}
+
+// "hoje" / "ontem" / a short date, for the "por confirmar" and "Dinheiro"
+// lists. Deliberately separate from textoUltimoCafe(): that one also knows
+// about the offline queue, which these lists never touch.
+function diaRelativo(iso) {
+  const d = new Date(iso);
+  const agora = new Date();
+  const ontem = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() - 1);
+  const dia = diaLocal(d);
+  if (dia === diaLocal(agora)) return "hoje";
+  if (dia === diaLocal(ontem)) return "ontem";
+  return dataCurta(iso);
+}
 
 const DIAS_SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 
@@ -358,7 +380,9 @@ async function entrar() {
     if (!erro || !erro.rede) throw erro; // not an offline case: let the caller send us to the login screen
     const idGuardado = readLocal(UTILIZADOR_ATUAL_KEY);
     const foto = idGuardado ? await idbUm("instantaneos", `eu:${idGuardado}`).catch(() => null) : null;
-    if (!foto) throw erro; // no cached state for anyone: nothing to show offline
+    // No cached state, or a pre-MB WAY snapshot without saldo_cent: treat both
+    // as absent rather than risk drawing "Deves NaN €" from the old shape.
+    if (!foto || foto.dados.saldo_cent === undefined) throw erro;
     eu = foto.dados;
     $("fotografia-aviso").textContent = `Sem ligação. A mostrar o último estado conhecido (${horaCurta(foto.em)}).`;
     $("fotografia-aviso").hidden = false;
@@ -379,23 +403,52 @@ function textoStock(s) {
   return `${cab}<small>${acaba} · ${fim} · ritmo ${s.ritmo_dia}/dia útil</small>`;
 }
 
+// Only fills #saldo-vista: #form-pagar is a sibling element, never touched
+// here, so a redraw triggered by sync/online events never wipes a form the
+// person has open (eg. mid-typing an amount).
 function desenharEu() {
   $("mes-cafes").textContent = `${plural(eu.cafes, "cápsula", "cápsulas")} · ${euros(eu.valor_cent)}`;
   $("mes-est").textContent = `${plural(eu.estimativa_cafes, "cápsula", "cápsulas")} · ${euros(eu.estimativa_cent)}`;
   $("prev").textContent = `~${String(eu.utilizador.cafes_dia).replace(".", ",")}/dia`;
-  const a = eu.mes_anterior;
-  $("ant-mes").textContent = nomeMes(a.mes);
-  $("ant-valor").textContent = `${plural(a.cafes, "cápsula", "cápsulas")} · ${euros(a.valor_cent)}`;
-  if (a.cafes === 0 && !a.pago) $("ant-estado").textContent = "Nada a pagar.";
-  else if (a.pago) {
-    const p = a.pagamento;
-    $("ant-estado").innerHTML = p.recebedor_id === eu.utilizador.id
-      ? `<span class="pago">Pago em ${dataCurta(p.em)} (és tu quem recebe)</span>`
-      : `<span class="pago">Pago a ${p.recebedor} em ${dataCurta(p.em)}</span>`;
-  } else $("ant-estado").innerHTML = '<span class="porpagar">Por pagar</span> — paga a quem vai comprar as cápsulas; essa pessoa marca como recebido.';
+
+  $("saldo-frase").textContent = fraseSaldo(eu.saldo_cent);
+  if (eu.sugestao) {
+    $("saldo-sugestao").textContent = `Sugestão: paga ${euros(eu.sugestao.valor_cent)} a ${eu.sugestao.nome}`;
+    $("saldo-sugestao").hidden = false;
+    $("btn-pagar").classList.remove("discreto");
+  } else {
+    $("saldo-sugestao").hidden = true;
+    $("btn-pagar").classList.add("discreto"); // no debt: paying ahead is still possible, just less urgent
+  }
+
+  const pc = eu.por_confirmar || [];
+  if (pc.length) {
+    $("por-confirmar-titulo").textContent = plural(pc.length, "pagamento por confirmar", "pagamentos por confirmar");
+    const ul = $("por-confirmar-lista");
+    ul.innerHTML = "";
+    for (const t of pc) {
+      const li = document.createElement("li");
+      li.innerHTML = `<span>${t.pagador} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
+        + `<span><button type="button" class="ligacao" data-confirmar="${t.id}">✓</button> `
+        + `<button type="button" class="ligacao" data-recusar="${t.id}">Não recebi</button></span>`;
+      ul.appendChild(li);
+    }
+    $("por-confirmar").hidden = false;
+  } else {
+    $("por-confirmar").hidden = true;
+  }
+
   const s = $("stock");
   s.className = "faixa" + (eu.stock.baixo ? " baixo" : "");
   s.innerHTML = textoStock(eu.stock);
+}
+
+// Refreshes /api/eu, re-snapshots it and redraws the card: shared by the
+// payment form, and by confirming or refusing a "por confirmar" payment.
+async function recarregarEu() {
+  eu = await api("GET", "/eu");
+  await guardarInstantaneo("eu", eu.utilizador.id, eu);
+  desenharEu();
 }
 
 $("btn-cafe").onclick = async () => {
@@ -406,7 +459,7 @@ $("btn-cafe").onclick = async () => {
   try { await idbPut("fila", { cliente_id: clienteId, tipo: "cafe", em, criado_em: em }); }
   catch (erro) { console.error("Falha ao guardar café na fila offline:", erro); }
 
-  eu.cafes += 1; eu.valor_cent += eu.preco_cent; eu.stock.stock -= 1;   // optimista
+  eu.cafes += 1; eu.valor_cent += eu.preco_cent; eu.stock.stock -= 1; eu.saldo_cent -= eu.preco_cent; // optimista
   desenharEu();
   $("ultimo-cafe").textContent = textoUltimoCafe(eu.ultimo_cafe, [{ em }]); // a linha muda já, sem esperar pela fila
   await atualizarAvisoFila();
@@ -440,7 +493,7 @@ $("btn-desfazer").onclick = async () => {
     const ultimo = fila.reduce((a, b) => (a.criado_em > b.criado_em ? a : b));
     try { await idbApagar("fila", ultimo.cliente_id); }
     catch (erro) { toast("Não foi possível desfazer: " + erro.message, true); return; }
-    eu.cafes -= 1; eu.valor_cent -= eu.preco_cent; eu.stock.stock += 1;
+    eu.cafes -= 1; eu.valor_cent -= eu.preco_cent; eu.stock.stock += 1; eu.saldo_cent += eu.preco_cent;
     desenharEu();
     await atualizarAvisoFila();
     await atualizarUltimoCafe();
@@ -459,11 +512,99 @@ $("btn-desfazer").onclick = async () => {
   try {
     await api("DELETE", "/cafe/ultimo");
     toast("Café apagado.");
-    eu = await api("GET", "/eu");
-    await guardarInstantaneo("eu", eu.utilizador.id, eu);
-    desenharEu();
+    await recarregarEu();
     await atualizarUltimoCafe();
   } catch (e) { toast(e.message, true); }
+};
+
+// ---------- pagamentos por MB WAY ----------
+
+function escolherChip(valorCent) {
+  for (const b of $("pagar-chips").querySelectorAll("button")) {
+    b.classList.toggle("selecionada", Number(b.dataset.valor) === valorCent);
+  }
+  $("pagar-livre").value = (valorCent / 100).toFixed(2);
+}
+
+// Fetched fresh every time the form opens (never the login screen's global
+// `utilizadores`, which entrar() never populates): the people list can
+// change between sessions and this form always needs the current one.
+async function abrirFormPagar() {
+  if (!navigator.onLine) return toast("Precisas de rede para registar um pagamento.", true);
+  let lista;
+  try { lista = await api("GET", "/utilizadores"); }
+  catch (erro) { return toast(erro && erro.rede ? "Precisas de rede para registar um pagamento." : erro.message, true); }
+
+  const sel = $("pagar-recebedor");
+  sel.innerHTML = "";
+  for (const u of lista.filter((x) => x.id !== eu.utilizador.id)) {
+    const o = document.createElement("option");
+    o.value = u.id; o.textContent = u.nome;
+    sel.appendChild(o);
+  }
+  if (eu.sugestao) sel.value = String(eu.sugestao.utilizador_id);
+
+  const valores = [500, 1000, 2000];
+  if (eu.sugestao && !valores.includes(eu.sugestao.valor_cent)) valores.push(eu.sugestao.valor_cent);
+  valores.sort((a, b) => a - b);
+  const chips = $("pagar-chips");
+  chips.innerHTML = "";
+  for (const v of valores) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = euros(v);
+    b.dataset.valor = v;
+    b.onclick = () => escolherChip(v);
+    chips.appendChild(b);
+  }
+  $("pagar-livre").value = "";
+  if (eu.sugestao) escolherChip(eu.sugestao.valor_cent);
+
+  $("saldo-vista").hidden = true;
+  $("form-pagar").hidden = false;
+}
+
+$("btn-pagar").onclick = () => { abrirFormPagar().catch((erro) => toast(erro.message, true)); };
+
+$("pagar-livre").oninput = () => {
+  for (const b of $("pagar-chips").querySelectorAll("button")) b.classList.remove("selecionada");
+};
+
+$("pagar-cancelar").onclick = () => {
+  $("form-pagar").hidden = true;
+  $("saldo-vista").hidden = false;
+};
+
+$("form-pagar").onsubmit = async (e) => {
+  e.preventDefault();
+  const valorCent = Math.round(Number($("pagar-livre").value.replace(",", ".")) * 100);
+  if (!(valorCent >= 1 && valorCent <= 100000)) return toast("Mete um valor entre 0,01 € e 1000 €.", true);
+  const recebedorId = Number($("pagar-recebedor").value);
+  if (!recebedorId) return toast("Escolhe a quem pagar.", true);
+  try {
+    await api("POST", "/transferencias", { recebedor_id: recebedorId, valor_cent: valorCent });
+    const nome = $("pagar-recebedor").selectedOptions[0].textContent;
+    $("form-pagar").hidden = true;
+    $("saldo-vista").hidden = false;
+    toast(`Pagamento registado. Notificação enviada a ${nome}.`);
+    await recarregarEu();
+  } catch (erro) {
+    if (erro && erro.rede) toast("Precisas de rede para registar um pagamento.", true);
+    else toast(erro.message, true);
+  }
+};
+
+// "por confirmar" ✓ / Não recebi, shown right on the Café card.
+$("por-confirmar-lista").onclick = async (ev) => {
+  const b = ev.target.closest("button[data-confirmar],button[data-recusar]");
+  if (!b) return;
+  const id = b.dataset.confirmar || b.dataset.recusar;
+  try {
+    await api("POST", `/transferencias/${id}/${b.dataset.confirmar ? "confirmar" : "anular"}`);
+    toast("Pagamento actualizado.");
+    await recarregarEu();
+  } catch (erro) { toast(erro.message, true); }
 };
 
 $("btn-prev").onclick = async () => {
@@ -503,6 +644,7 @@ $("btn-sair").onclick = async () => {
   await api("POST", "/logout").catch(() => {});
   eu = null;
   escritorio = null;
+  dinheiro = null;
   removeLocal(UTILIZADOR_ATUAL_KEY);
   await apagarDB(); // /api/escritorio holds everyone's data: nothing offline survives a shared device's logout
   await carregarNomes();
@@ -626,16 +768,101 @@ $("hist-seguinte").onclick = () => {
   carregarHistorico(mesVizinho(historico.mes, 1)).catch((e) => toast(e.message, true));
 };
 
+// ---------- histórico: separador Dinheiro ----------
+
+function selecionarHistVista(v) {
+  $("hist-cafes").hidden = v !== "cafes";
+  $("hist-dinheiro").hidden = v !== "dinheiro";
+  for (const b of $("hist-selector").querySelectorAll("button")) b.classList.toggle("activa", b.dataset.histVista === v);
+  if (v === "dinheiro" && !dinheiro) carregarDinheiro().catch((e) => toast(e.message, true));
+}
+
+$("hist-selector").onclick = (ev) => {
+  const b = ev.target.closest("button[data-hist-vista]");
+  if (!b) return;
+  selecionarHistVista(b.dataset.histVista);
+};
+
+async function carregarDinheiro() {
+  const idAtual = eu ? eu.utilizador.id : readLocal(UTILIZADOR_ATUAL_KEY);
+  try {
+    dinheiro = await api("GET", "/movimentos");
+    if (idAtual) await guardarInstantaneo("movimentos", idAtual, dinheiro);
+    $("dinheiro-aviso").hidden = true;
+  } catch (erro) {
+    if (!erro || !erro.rede) throw erro;
+    const foto = idAtual ? await idbUm("instantaneos", `movimentos:${idAtual}`).catch(() => null) : null;
+    if (!foto) throw erro;
+    dinheiro = foto.dados;
+    $("dinheiro-aviso").textContent = `Sem ligação. A mostrar o último estado conhecido (${horaCurta(foto.em)}).`;
+    $("dinheiro-aviso").hidden = false;
+  }
+  desenharDinheiro();
+}
+
+function desenharDinheiro() {
+  const d = dinheiro;
+  $("dinheiro-saldo").textContent = fraseSaldo(d.saldo_cent);
+
+  // Transfers and purchases interleaved by date, most recent first (section
+  // 4.5 hands over three separate arrays; merging them into one feed here is
+  // this client's own choice, not something the spec spells out).
+  const itens = [];
+  for (const t of d.transferencias) itens.push({ tipo: "transferencia", em: t.em, dado: t });
+  for (const c of d.compras) itens.push({ tipo: "compra", em: c.em, dado: c });
+  itens.sort((a, b) => (a.em < b.em ? 1 : -1));
+
+  const ul = $("dinheiro-lista");
+  ul.innerHTML = "";
+  for (const it of itens) {
+    const li = document.createElement("li");
+    if (it.tipo === "compra") {
+      li.innerHTML = `<span>Compraste ${plural(it.dado.capsulas, "cápsula", "cápsulas")} · ${euros(it.dado.custo_cent)} · ${dataCurta(it.dado.em)}</span>`;
+    } else {
+      const t = it.dado;
+      const texto = t.sentido === "paguei" ? `Pagaste ${euros(t.valor_cent)} a ${t.outro}` : `Recebeste ${euros(t.valor_cent)} de ${t.outro}`;
+      let acoes;
+      if (t.anulada_em) {
+        li.className = "anulada";
+        acoes = `<span class="nota">${t.anulada_por === eu.utilizador.id ? "anulado por ti" : `anulado por ${t.outro}`}</span>`;
+      } else if (t.confirmada_em) {
+        acoes = "";
+      } else if (t.sentido === "paguei") {
+        acoes = `<button type="button" class="ligacao" data-mov-anular="${t.id}">Anular</button>`;
+      } else {
+        acoes = `<button type="button" class="ligacao" data-mov-confirmar="${t.id}">✓</button> `
+          + `<button type="button" class="ligacao" data-mov-anular="${t.id}">Não recebi</button>`;
+      }
+      li.innerHTML = `<span>${texto} · ${dataCurta(t.em)}</span><span>${acoes}</span>`;
+    }
+    ul.appendChild(li);
+  }
+
+  for (const m of d.meses) {
+    const li = document.createElement("li");
+    li.className = "nota";
+    li.textContent = `${nomeMes(m.mes)}: ${plural(m.cafes, "café", "cafés")}, ${euros(-m.valor_cent)}`;
+    ul.appendChild(li);
+  }
+}
+
+$("dinheiro-lista").onclick = async (ev) => {
+  const b = ev.target.closest("button[data-mov-confirmar],button[data-mov-anular]");
+  if (!b) return;
+  const id = b.dataset.movConfirmar || b.dataset.movAnular;
+  try {
+    await api("POST", `/transferencias/${id}/${b.dataset.movConfirmar ? "confirmar" : "anular"}`);
+    toast("Pagamento actualizado.");
+    await carregarDinheiro();
+    if (eu) await recarregarEu(); // the balance shown on the Café card moves too
+  } catch (erro) { toast(erro.message, true); }
+};
+
 // ---------- escritório ----------
 
 async function carregarEscritorio(mes) {
   try {
     escritorio = await api("GET", "/escritorio" + (mes ? `?mes=${mes}` : ""));
-    if (!mes && escritorio.meses.length > 1) {
-      // Sem mês escolhido: se o mês anterior ainda tem pagamentos por fazer, abre nele.
-      const anterior = await api("GET", `/escritorio?mes=${escritorio.meses[1]}`);
-      if (anterior.pessoas.some((p) => p.cafes > 0 && !p.pago)) escritorio = anterior;
-    }
     const idAtual = eu ? eu.utilizador.id : readLocal(UTILIZADOR_ATUAL_KEY);
     if (idAtual) await guardarInstantaneo("escritorio", idAtual, escritorio);
     $("esc-fotografia-aviso").hidden = true;
@@ -643,12 +870,19 @@ async function carregarEscritorio(mes) {
     if (!erro || !erro.rede) throw erro;
     const idAtual = eu ? eu.utilizador.id : readLocal(UTILIZADOR_ATUAL_KEY);
     const foto = idAtual ? await idbUm("instantaneos", `escritorio:${idAtual}`).catch(() => null) : null;
-    if (!foto) throw erro;
+    // A pre-MB WAY snapshot has no `pote`: treat it as absent rather than
+    // draw a broken pot line or throw on por_confirmar-shaped reads.
+    if (!foto || !foto.dados.pote) throw erro;
     escritorio = foto.dados;
     $("esc-fotografia-aviso").textContent = `Sem ligação. A mostrar o último estado conhecido (${horaCurta(foto.em)}).`;
     $("esc-fotografia-aviso").hidden = false;
   }
   desenharEscritorio();
+}
+
+function saldoCurto(cent) {
+  if (cent === 0) return euros(0);
+  return (cent < 0 ? "-" : "+") + euros(Math.abs(cent));
 }
 
 function desenharEscritorio() {
@@ -662,29 +896,17 @@ function desenharEscritorio() {
   }
   sel.value = e.mes;
   $("esc-total").textContent = `${plural(e.total_cafes, "cápsula", "cápsulas")} · ${euros(e.total_cent)}`;
+  $("esc-pote").textContent = `Pote: ${euros(e.pote.valor_cent)} em cápsulas no armário (${plural(e.pote.capsulas, "cápsula", "cápsulas")})`;
 
-  const fechado = e.mes < e.mes_actual;
   const tb = $("tabela").querySelector("tbody");
   tb.innerHTML = "";
   for (const p of e.pessoas) {
     const tr = document.createElement("tr");
-    let estado = "";
-    if (fechado) {
-      if (p.pago) {
-        estado = p.pagamento.recebedor_id === p.id
-          ? `<span class="pago">Pago em ${dataCurta(p.pagamento.em)} (é quem recebe)</span>`
-          : `<span class="pago">Pago a ${p.pagamento.recebedor} em ${dataCurta(p.pagamento.em)}</span>`;
-        if (p.pagamento.recebedor_id === e.eu) estado += ` <button class="ligacao" data-anular="${p.id}">anular</button>`;
-      } else if (p.cafes > 0) {
-        estado = `<span class="porpagar">Por pagar</span> <button class="ligacao" data-receber="${p.id}">Recebi o pagamento</button>`;
-      } else estado = '<span class="nota">—</span>';
-    }
-    tr.innerHTML = `<td>${p.nome}</td><td class="num">${p.cafes}</td><td class="num">${euros(p.valor_cent)}</td><td>${estado}</td>`;
+    const classeSaldo = p.saldo_cent < 0 ? "saldo-neg" : p.saldo_cent > 0 ? "saldo-pos" : "";
+    tr.innerHTML = `<td>${p.nome}</td><td class="num">${p.cafes}</td><td class="num">${euros(p.valor_cent)}</td>`
+      + `<td class="num ${classeSaldo}">${saldoCurto(p.saldo_cent)}</td>`;
     tb.appendChild(tr);
   }
-  $("esc-ajuda").textContent = fechado
-    ? "Mês fechado. Quem recebe o dinheiro carrega em «Recebi o pagamento» na linha de cada pessoa (também na sua)."
-    : "Mês em curso. O fecho aparece quando o mês terminar.";
 
   const s = $("esc-stock");
   s.className = "faixa" + (e.stock.baixo ? " baixo" : "");
@@ -693,46 +915,73 @@ function desenharEscritorio() {
   const ul = $("compras");
   ul.innerHTML = "";
   for (const c of e.compras) {
+    const acoes = [];
+    if (c.pode_editar) acoes.push(`<button type="button" class="ligacao" data-corrigir="${c.id}">Corrigir custo</button>`);
+    if (c.utilizador_id === e.eu) acoes.push(`<button type="button" class="ligacao" data-apagar="${c.id}">apagar</button>`);
     const li = document.createElement("li");
-    const apagar = c.utilizador_id === e.eu ? ` <button class="ligacao" data-apagar="${c.id}">apagar</button>` : "";
-    li.innerHTML = `<span>+${c.capsulas} · ${c.nome || "?"} · ${dataCurta(c.em)}${c.nota ? " · " + c.nota : ""}</span><span>${apagar}</span>`;
+    const estimado = c.custo_estimado ? ' <span class="nota">custo estimado</span>' : "";
+    li.innerHTML = `<span>+${c.capsulas} · ${euros(c.custo_cent)} · ${c.nome || "?"} · ${dataCurta(c.em)}`
+      + `${c.nota ? " · " + c.nota : ""}${estimado}</span><span>${acoes.join(" ")}</span>`;
     ul.appendChild(li);
   }
   if (!e.compras.length) ul.innerHTML = '<li class="nota">Ainda não há entradas. Regista as cápsulas iniciais.</li>';
 
-  $("cfg-preco").value = (e.preco_cent / 100).toFixed(2);
   $("cfg-limiar").value = e.stock.limiar;
 }
 
 $("sel-mes").onchange = () => carregarEscritorio($("sel-mes").value);
 
 $("vista-escritorio").onclick = async (ev) => {
-  const b = ev.target.closest("button[data-receber],button[data-anular],button[data-apagar]");
+  const b = ev.target.closest("button[data-apagar],button[data-corrigir]");
   if (!b) return;
   try {
-    if (b.dataset.receber) {
-      const p = escritorio.pessoas.find((x) => x.id === Number(b.dataset.receber));
-      if (!confirm(`Confirmas que recebeste ${euros(p.valor_cent)} de ${p.nome} por ${nomeMes(escritorio.mes)}?`)) return;
-      await api("POST", "/pagamentos", { mes: escritorio.mes, pagador_id: p.id });
-      toast("Pagamento registado.");
-    } else if (b.dataset.anular) {
-      if (!confirm("Anular este pagamento?")) return;
-      await api("DELETE", `/pagamentos/${escritorio.mes}/${b.dataset.anular}`);
-      toast("Pagamento anulado.");
-    } else if (b.dataset.apagar) {
+    if (b.dataset.apagar) {
       if (!confirm("Apagar esta entrada de cápsulas?")) return;
       await api("DELETE", `/compras/${b.dataset.apagar}`);
       toast("Entrada apagada.");
+    } else if (b.dataset.corrigir) {
+      const c = escritorio.compras.find((x) => x.id === Number(b.dataset.corrigir));
+      const v = prompt("Novo custo desta entrada, em euros:", (c.custo_cent / 100).toFixed(2));
+      if (v === null) return;
+      const custoCent = Math.round(Number(v.replace(",", ".")) * 100);
+      if (!(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
+      await api("PATCH", `/compras/${b.dataset.corrigir}`, { custo_cent: custoCent });
+      toast("Custo corrigido.");
     }
     await carregarEscritorio(escritorio.mes);
   } catch (e) { toast(e.message, true); }
 };
 
+// Debounced, silent on error: a preview that fails or lags must never block
+// the form itself, per spec.
+let previewTimer;
+async function atualizarPreviewPreco() {
+  const capsulas = Number($("compra-n").value);
+  const custoCent = Math.round(Number($("compra-custo").value.replace(",", ".")) * 100);
+  if (!(capsulas > 0) || !(custoCent > 0)) { $("compra-preview").hidden = true; return; }
+  try {
+    const r = await api("GET", `/preco/simular?capsulas=${capsulas}&custo_cent=${custoCent}`);
+    $("compra-preview").textContent = `O café passa a custar ${euros(r.preco_cent)}`;
+    $("compra-preview").hidden = false;
+  } catch {
+    $("compra-preview").hidden = true;
+  }
+}
+function agendarPreviewPreco() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(atualizarPreviewPreco, 300);
+}
+$("compra-n").oninput = agendarPreviewPreco;
+$("compra-custo").oninput = agendarPreviewPreco;
+
 $("form-compra").onsubmit = async (e) => {
   e.preventDefault();
+  const custoCent = Math.round(Number($("compra-custo").value.replace(",", ".")) * 100);
+  if (!(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
   try {
-    await api("POST", "/compras", { capsulas: Number($("compra-n").value), nota: $("compra-nota").value || null });
+    await api("POST", "/compras", { capsulas: Number($("compra-n").value), custo_cent: custoCent, nota: $("compra-nota").value || null });
     $("form-compra").reset();
+    $("compra-preview").hidden = true;
     toast("Entrada registada.");
     await carregarEscritorio(escritorio.mes);
   } catch (err) { toast(err.message, true); }
@@ -741,7 +990,7 @@ $("form-compra").onsubmit = async (e) => {
 $("form-config").onsubmit = async (e) => {
   e.preventDefault();
   try {
-    await api("PUT", "/config", { preco_cent: Math.round(Number($("cfg-preco").value) * 100), stock_baixo: Number($("cfg-limiar").value) });
+    await api("PUT", "/config", { stock_baixo: Number($("cfg-limiar").value) });
     toast("Definições guardadas.");
     await carregarEscritorio(escritorio.mes);
   } catch (err) { toast(err.message, true); }
@@ -756,6 +1005,8 @@ $("abas").onclick = async (ev) => {
     if (b.dataset.vista === "cafe") await entrar();
     else if (b.dataset.vista === "historico") {
       await carregarHistorico();
+      dinheiro = null; // force a fresh /api/movimentos next time Dinheiro is opened
+      selecionarHistVista("cafes");
       mostrar("historico");
     } else {
       await carregarEscritorio();

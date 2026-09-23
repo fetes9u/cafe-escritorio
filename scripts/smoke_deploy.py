@@ -7,10 +7,12 @@ exits non-zero on the first failure.
 
 It answers a question the unit tests cannot answer: does the image actually work
 when a person walks through it, including the parts where the Python server and
-the JavaScript client have to agree on a JSON field name. Every field name the
-client reads is extracted from the client source at run time and never
+the JavaScript client have to agree on a JSON field name. Where a check is about
+that agreement (the VAPID key field, the preference toggles, the push payload),
+the field names are extracted from the client source at run time and never
 hardcoded here, so a rename on either side fails this gate instead of failing a
-colleague in production.
+colleague in production. The journey steps (3 and 7) use the names of the API
+contract directly; tests/test_contrato_api.py binds those to the client.
 
 It NEVER touches production: the container is created here, given a freshly
 generated VAPID keypair, an explicit environment (no ambient CAFE_* variables
@@ -686,6 +688,89 @@ def step_6_push(rep: Report, box: Container, subscriber: requests.Session, push:
     )
 
 
+def _register(box: Container, label: str) -> tuple[requests.Session, int]:
+    session = requests.Session()
+    name = f"Smoke {secrets.token_hex(3)}"
+    pin = "".join(secrets.choice("0123456789") for _ in range(4))
+    resp = session.post(
+        box.base_url + "/api/registar",
+        json={"nome": name, "pin": pin, "cafes_dia": 1},
+        timeout=HTTP_TIMEOUT,
+    )
+    if resp.status_code != 201:
+        raise SmokeFailure(f"POST /api/registar ({label}) answered {resp.status_code}: {resp.text[:300]}")
+    return session, resp.json()["id"]
+
+
+def _read_me(box: Container, session: requests.Session, label: str) -> dict:
+    resp = session.get(box.base_url + "/api/eu", timeout=HTTP_TIMEOUT)
+    if resp.status_code != 200:
+        raise SmokeFailure(f"GET /api/eu ({label}) answered {resp.status_code}: {resp.text[:300]}")
+    body = resp.json()
+    if not isinstance(body.get("saldo_cent"), int):
+        raise SmokeFailure(
+            f"GET /api/eu ({label}) has no integer saldo_cent (got {body.get('saldo_cent')!r}). "
+            "The client would draw its balance card from nothing."
+        )
+    return body
+
+
+def step_7_payment(rep: Report, box: Container) -> None:
+    rep.start("Step 7: one person drinks, pays another by MB WAY, and both balances move")
+    # Two fresh accounts, so no earlier step can have moved these balances. The
+    # step 6 subscriber still gets their registo and cafe pushes; nothing here
+    # reads the push inbox, so they do not matter.
+    payer, payer_id = _register(box, "payer")
+    receiver, receiver_id = _register(box, "receiver")
+    rep.detail(f"payer id {payer_id}, receiver id {receiver_id}")
+
+    before = _read_me(box, payer, "payer")
+    resp = payer.post(box.base_url + "/api/cafe", timeout=HTTP_TIMEOUT)
+    if resp.status_code != 201:
+        raise SmokeFailure(f"POST /api/cafe (payer) answered {resp.status_code}: {resp.text[:300]}")
+    drank = _read_me(box, payer, "payer")
+    price = drank["valor_cent"] - before["valor_cent"]
+    if price <= 0 or drank["saldo_cent"] != before["saldo_cent"] - price:
+        raise SmokeFailure(
+            f"after one coffee the payer's saldo_cent went {before['saldo_cent']} -> "
+            f"{drank['saldo_cent']} while the month's valor_cent moved by {price}. The balance "
+            "must drop by exactly the price stamped on the coffee."
+        )
+    rep.detail(f"the coffee cost {price} cent; payer saldo_cent is now {drank['saldo_cent']}")
+
+    receiver_before = _read_me(box, receiver, "receiver")["saldo_cent"]
+    amount = 500
+    resp = payer.post(
+        box.base_url + "/api/transferencias",
+        json={"recebedor_id": receiver_id, "valor_cent": amount},
+        timeout=HTTP_TIMEOUT,
+    )
+    if resp.status_code != 201:
+        raise SmokeFailure(f"POST /api/transferencias answered {resp.status_code}: {resp.text[:300]}")
+    transfer_id = resp.json().get("id")
+
+    payer_after = _read_me(box, payer, "payer")["saldo_cent"]
+    receiver_view = _read_me(box, receiver, "receiver")
+    receiver_after = receiver_view["saldo_cent"]
+    if payer_after != drank["saldo_cent"] + amount or receiver_after != receiver_before - amount:
+        raise SmokeFailure(
+            f"POST /api/transferencias answered 201 but the balances read back are wrong: payer "
+            f"{drank['saldo_cent']} -> {payer_after} (expected +{amount}), receiver "
+            f"{receiver_before} -> {receiver_after} (expected -{amount})."
+        )
+    pending = [t for t in receiver_view.get("por_confirmar") or [] if t.get("id") == transfer_id]
+    if not pending or pending[0].get("pagador_id") != payer_id or pending[0].get("valor_cent") != amount:
+        raise SmokeFailure(
+            f"the receiver's por_confirmar does not list transfer {transfer_id} from {payer_id} "
+            f"for {amount} cent: {receiver_view.get('por_confirmar')!r}. They would have nothing "
+            "to confirm or reject."
+        )
+    rep.passed(
+        f"payer saldo_cent {drank['saldo_cent']} -> {payer_after}, receiver "
+        f"{receiver_before} -> {receiver_after}, and the payment waits in por_confirmar"
+    )
+
+
 # ---------------------------------------------------------------- driver
 
 def main() -> int:
@@ -761,6 +846,7 @@ def main() -> int:
         "Step 4: GET /api/push/chave carries the field app.js actually reads",
         "Step 5: notification preferences round trip in the shape app.js builds",
         "Step 6: a real push arrives, decrypts, and carries non-empty values",
+        "Step 7: one person drinks, pays another by MB WAY, and both balances move",
     ]
 
     try:
@@ -782,6 +868,8 @@ def main() -> int:
         step_5_preferences(rep, box, session)
         remaining.pop(0)
         step_6_push(rep, box, session, push)
+        remaining.pop(0)
+        step_7_payment(rep, box)
         remaining.pop(0)
     except SmokeFailure as exc:
         rep.failed(str(exc))

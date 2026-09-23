@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Café do escritório</title>
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=7">
 <link rel="manifest" href="/static/manifest.json">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png">
@@ -73,9 +73,25 @@
     <div class="linha nota"><span>A tua previsão</span><span><b id="prev"></b> <button id="btn-prev" class="ligacao">alterar</button></span></div>
   </div>
 
-  <div class="cartao">
-    <div class="linha"><span>Mês anterior (<span id="ant-mes"></span>)</span><b id="ant-valor"></b></div>
-    <div id="ant-estado" class="nota"></div>
+  <div class="cartao" id="cartao-saldo">
+    <div id="saldo-vista">
+      <div class="linha"><b id="saldo-frase"></b></div>
+      <p id="saldo-sugestao" class="nota" hidden></p>
+      <button type="button" id="btn-pagar">Paguei por MB WAY</button>
+      <div id="por-confirmar" hidden>
+        <p id="por-confirmar-titulo" class="nota"></p>
+        <ul id="por-confirmar-lista"></ul>
+      </div>
+    </div>
+    <form id="form-pagar" hidden>
+      <div id="pagar-chips" class="grelha-chips"></div>
+      <div class="linha">
+        <label>Outro valor (€) <input id="pagar-livre" type="number" step="0.01" min="0.01" max="1000"></label>
+        <label>A quem <select id="pagar-recebedor" required></select></label>
+      </div>
+      <button type="submit">Guardar</button>
+      <button type="button" id="pagar-cancelar" class="ligacao">Cancelar</button>
+    </form>
   </div>
 
   <footer class="rodape">
@@ -88,14 +104,27 @@
 
 <!-- HISTÓRICO -->
 <section id="vista-historico" hidden>
-  <p id="hist-aviso" class="nota aviso-fotografia" hidden></p>
-  <div class="hist-cabecalho">
-    <button type="button" id="hist-anterior" class="ligacao" aria-label="Mês anterior">‹</button>
-    <b id="hist-mes"></b>
-    <button type="button" id="hist-seguinte" class="ligacao" aria-label="Mês seguinte">›</button>
+  <div id="hist-selector" class="hist-selector">
+    <button type="button" data-hist-vista="cafes" class="ligacao activa">Cafés</button>
+    <button type="button" data-hist-vista="dinheiro" class="ligacao">Dinheiro</button>
   </div>
-  <div id="hist-grelha" class="calendario"></div>
-  <div id="hist-detalhe" class="cartao"></div>
+
+  <div id="hist-cafes">
+    <p id="hist-aviso" class="nota aviso-fotografia" hidden></p>
+    <div class="hist-cabecalho">
+      <button type="button" id="hist-anterior" class="ligacao" aria-label="Mês anterior">‹</button>
+      <b id="hist-mes"></b>
+      <button type="button" id="hist-seguinte" class="ligacao" aria-label="Mês seguinte">›</button>
+    </div>
+    <div id="hist-grelha" class="calendario"></div>
+    <div id="hist-detalhe" class="cartao"></div>
+  </div>
+
+  <div id="hist-dinheiro" hidden>
+    <p id="dinheiro-aviso" class="nota aviso-fotografia" hidden></p>
+    <p id="dinheiro-saldo" class="nota"></p>
+    <ul id="dinheiro-lista"></ul>
+  </div>
 </section>
 
 <!-- ESCRITÓRIO -->
@@ -105,12 +134,12 @@
     <label>Mês <select id="sel-mes"></select></label>
     <b id="esc-total"></b>
   </div>
+  <p id="esc-pote" class="nota"></p>
 
   <table id="tabela">
-    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">€</th><th>Estado</th></tr></thead>
+    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">€ do mês</th><th class="num">Saldo</th></tr></thead>
     <tbody></tbody>
   </table>
-  <p id="esc-ajuda" class="nota"></p>
 
   <div id="esc-stock" class="faixa"></div>
 
@@ -118,20 +147,20 @@
     <summary>Entradas de cápsulas</summary>
     <form id="form-compra" class="linha">
       <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="cápsulas" required>
+      <input id="compra-custo" type="number" step="0.01" min="0.01" max="10000" placeholder="custo (€)" required>
       <input id="compra-nota" maxlength="80" placeholder="nota (opcional)">
       <button type="submit">Registar entrada</button>
     </form>
+    <p id="compra-preview" class="nota" hidden></p>
     <ul id="compras"></ul>
   </details>
 
   <details class="cartao">
     <summary>Definições</summary>
     <form id="form-config" class="linha">
-      <label>Preço por cápsula (€) <input id="cfg-preco" type="number" step="0.01" min="0.01" required></label>
       <label>Aviso de stock baixo (cápsulas) <input id="cfg-limiar" type="number" min="0" required></label>
       <button type="submit">Guardar</button>
     </form>
-    <p class="nota">O preço que conta é o do momento em que se marca o pagamento; mudar o preço afecta os meses ainda não pagos.</p>
   </details>
 
   <details class="cartao" id="notif-secao" open>
@@ -161,6 +190,6 @@
   <button type="button" id="instalar-fechar" class="ligacao">Dispensar</button>
 </div>
 
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

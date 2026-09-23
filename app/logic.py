@@ -1,4 +1,4 @@
-"""Cálculos puros: calendário, estimativas e fecho de mês. Sem acesso à BD."""
+"""Cálculos puros: calendário, estimativas, preço médio e sugestão de pagamento. Sem acesso à BD."""
 import calendar
 import os
 from datetime import date, datetime, timedelta, timezone
@@ -18,11 +18,6 @@ def local(dt: datetime) -> datetime:
 
 def mes_de(dt: datetime) -> str:
     return local(dt).strftime("%Y-%m")
-
-
-def mes_anterior(mes: str) -> str:
-    ano, m = map(int, mes.split("-"))
-    return f"{ano - 1}-12" if m == 1 else f"{ano}-{m - 1:02d}"
 
 
 def limites_mes(mes: str) -> tuple[date, date]:
@@ -51,7 +46,7 @@ def ritmo_diario(cafes: int, dias_decorridos: int, cafes_dia_declarado: float) -
 
 
 def dias_decorridos(mes: str, hoje: date, registado_em: date | None = None) -> int:
-    """Dias úteis desde o dia 1 do mês — ou desde o registo da pessoa, se foi mais tarde — até hoje."""
+    """Dias úteis desde o dia 1 do mês (ou desde o registo da pessoa, se foi mais tarde) até hoje."""
     inicio, _ = limites_mes(mes)
     if registado_em and registado_em > inicio:
         inicio = registado_em
@@ -61,6 +56,30 @@ def dias_decorridos(mes: str, hoje: date, registado_em: date | None = None) -> i
 def arredonda(x: float) -> int:
     """Ao inteiro mais próximo, 0,5 sobe (o round() do Python vai ao par)."""
     return int(x + 0.5)
+
+
+def preco_corrente(por_recuperar_cent: int, stock: int, ultimo_preco_cent: int) -> int:
+    """Preço de um café = custo médio do que está no armário. Com o armário
+    vazio (ou negativo) não há média: usa-se o preço do último café gravado.
+    Com por_recuperar >= 0 e o 0,5 a subir, o último café leva o que falta ao
+    cêntimo, portanto o pote fecha exactamente a zero."""
+    if stock <= 0:
+        return ultimo_preco_cent
+    return max(0, arredonda(por_recuperar_cent / stock))
+
+
+def sugestao_pagamento(meu_saldo_cent: int, outros: list[tuple[int, str, int]]) -> dict | None:
+    """A quem pagar e quanto, só para quem deve. `outros` são (id, nome,
+    saldo_cent) das restantes pessoas. Credor = o maior saldo positivo (em
+    empate, o nome por ordem alfabética); o valor não passa do que o credor tem
+    a receber, para várias pessoas não pagarem todas à mesma."""
+    if meu_saldo_cent >= 0:
+        return None
+    credores = [o for o in outros if o[2] > 0]
+    if not credores:
+        return None
+    uid, nome, saldo = min(credores, key=lambda o: (-o[2], o[1].casefold()))
+    return {"utilizador_id": uid, "nome": nome, "valor_cent": min(-meu_saldo_cent, saldo)}
 
 
 def estimativa_mes(cafes: int, hoje: date, mes: str, cafes_dia_declarado: float,

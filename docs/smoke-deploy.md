@@ -46,6 +46,14 @@ standard library. No extra dependency was added for it.
    `push` handler in `app/static/sw.js` reads (`dados.<field>`, extracted from the listener) must
    be present **and non-empty**. Asserting on the keys alone would let the empty title bug
    through, which is the bug that shipped.
+7. **A payment along the user's path.** Two fresh accounts: one drinks a coffee and its
+   `saldo_cent` in `GET /api/eu` must drop by exactly the price stamped on that coffee; it then
+   pays the other 5,00 € with `POST /api/transferencias`, and both balances are read back from
+   `GET /api/eu`: the payer's up by 500, the receiver's down by 500, and the payment listed in
+   the receiver's `por_confirmar`. The 201 alone proves nothing. The field names here follow the
+   API contract in `docs/superpowers/specs/2026-09-23-saldos-e-pagamentos-mbway-design.md`
+   rather than being extracted from `app.js`; the client side of those names is checked by
+   `tests/test_contrato_api.py`.
 
 ## It never touches production
 
@@ -68,14 +76,17 @@ person makes on purpose and not a default.
 A check that cannot fail is decoration. Steps 2, 3, 4 and 6 were verified by breaking them on
 purpose and confirming the script exits non-zero naming what broke: a coffee count that cannot
 happen, a client field name that does not exist in the response, a field the payload does not
-carry, a field present but empty, and both diagnoses of an asset mismatch. Worth repeating after
-any change to the script.
+carry, a field present but empty, and both diagnoses of an asset mismatch. Step 7 has not been
+through this yet (see below). Worth repeating after any change to the script.
 
 ## Known limits, so nobody mistakes them for tested ground
 
-Verified by running: the happy path against a matching image, and the failure paths above.
-Not exercised yet, and therefore not proven: the Ctrl-C and SIGTERM cleanup handlers (cleanup is
-proven on the normal and failed-step paths only), the `--pull` branch and digest references, hosts
+Verified by running: the happy path of steps 1 to 6 against a matching image, and the failure
+paths above. Not exercised yet, and therefore not proven: step 7, which was written with the
+balances feature and has never been run against an image (neither its happy path nor a
+deliberate break), the targeted `pagamento` push (only the unit tests prove it reaches the
+receiver alone), the Ctrl-C and SIGTERM cleanup handlers (cleanup is proven on the normal and
+failed-step paths only), the `--pull` branch and digest references, hosts
 where `host.docker.internal` is not provided by Docker Desktop, and `--allow-skips`. That last one
 is a no-op today: every step turned out to be implementable honestly, so nothing raises a skip and
 the flag has never changed an outcome. It is scaffolding for a future check that cannot be done

@@ -46,14 +46,16 @@ standard library. No extra dependency was added for it.
    `push` handler in `app/static/sw.js` reads (`dados.<field>`, extracted from the listener) must
    be present **and non-empty**. Asserting on the keys alone would let the empty title bug
    through, which is the bug that shipped.
-7. **A payment along the user's path.** Two fresh accounts: one drinks a coffee and its
-   `saldo_cent` in `GET /api/eu` must drop by exactly the price stamped on that coffee; it then
-   pays the other 5,00 € with `POST /api/transferencias`, and both balances are read back from
-   `GET /api/eu`: the payer's up by 500, the receiver's down by 500, and the payment listed in
-   the receiver's `por_confirmar`. The 201 alone proves nothing. The field names here follow the
-   API contract in `docs/superpowers/specs/2026-09-23-saldos-e-pagamentos-mbway-design.md`
-   rather than being extracted from `app.js`; the client side of those names is checked by
-   `tests/test_contrato_api.py`.
+7. **A payment to the cash box along the user's path.** Two fresh accounts. One is made keeper
+   of the cash box with `PUT /api/config` (`caixa_responsavel_id`), read back through
+   `GET /api/config`. The other drinks a coffee and its `saldo_cent` in `GET /api/eu` must drop
+   by exactly the fixed `preco_cent` stamped on that coffee; it then pays 5,00 € to the cash box
+   with `POST /api/transferencias` (`para_caixa`), and the effect is read back from `GET /api/eu`:
+   the payer's `saldo_cent` up by 500, the keeper's `caixa.dinheiro_cent` up by 500, the keeper's
+   own `saldo_cent` unchanged, and the payment listed in the keeper's `por_confirmar`. The 201
+   alone proves nothing. The field names here follow the API contract in
+   `docs/superpowers/specs/2026-09-23-caixa-e-historico-design.md` rather than being extracted
+   from `app.js`; the client side of those names is checked by `tests/test_contrato_api.py`.
 
 ## It never touches production
 
@@ -83,8 +85,8 @@ through this yet (see below). Worth repeating after any change to the script.
 
 Verified by running: the happy path of steps 1 to 6 against a matching image, and the failure
 paths above. Not exercised yet, and therefore not proven: step 7, which was written with the
-balances feature and has never been run against an image (neither its happy path nor a
-deliberate break), the targeted `pagamento` push (only the unit tests prove it reaches the
+balances feature, rewritten for the cash box, and has never been run against an image (neither
+its happy path nor a deliberate break), the targeted `pagamento` push (only the unit tests prove it reaches the
 receiver alone), the Ctrl-C and SIGTERM cleanup handlers (cleanup is proven on the normal and
 failed-step paths only), the `--pull` branch and digest references, hosts
 where `host.docker.internal` is not provided by Docker Desktop, and `--allow-skips`. That last one

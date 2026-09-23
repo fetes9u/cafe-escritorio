@@ -715,14 +715,29 @@ def _read_me(box: Container, session: requests.Session, label: str) -> dict:
     return body
 
 
+STEP_7 = "Step 7: a keeper is set, one person drinks and pays the cash box, and balance and cash move"
+
+
 def step_7_payment(rep: Report, box: Container) -> None:
-    rep.start("Step 7: one person drinks, pays another by MB WAY, and both balances move")
+    rep.start(STEP_7)
     # Two fresh accounts, so no earlier step can have moved these balances. The
     # step 6 subscriber still gets their registo and cafe pushes; nothing here
     # reads the push inbox, so they do not matter.
     payer, payer_id = _register(box, "payer")
-    receiver, receiver_id = _register(box, "receiver")
-    rep.detail(f"payer id {payer_id}, receiver id {receiver_id}")
+    keeper, keeper_id = _register(box, "keeper")
+    rep.detail(f"payer id {payer_id}, keeper id {keeper_id}")
+
+    resp = keeper.put(
+        box.base_url + "/api/config", json={"caixa_responsavel_id": keeper_id}, timeout=HTTP_TIMEOUT
+    )
+    if resp.status_code != 200:
+        raise SmokeFailure(f"PUT /api/config answered {resp.status_code}: {resp.text[:300]}")
+    resp = payer.get(box.base_url + "/api/config", timeout=HTTP_TIMEOUT)
+    if resp.status_code != 200 or resp.json().get("caixa_responsavel_id") != keeper_id:
+        raise SmokeFailure(
+            f"PUT /api/config answered 200 but GET /api/config reads back {resp.status_code} "
+            f"{resp.text[:300]}, not caixa_responsavel_id {keeper_id}."
+        )
 
     before = _read_me(box, payer, "payer")
     resp = payer.post(box.base_url + "/api/cafe", timeout=HTTP_TIMEOUT)
@@ -730,19 +745,22 @@ def step_7_payment(rep: Report, box: Container) -> None:
         raise SmokeFailure(f"POST /api/cafe (payer) answered {resp.status_code}: {resp.text[:300]}")
     drank = _read_me(box, payer, "payer")
     price = drank["valor_cent"] - before["valor_cent"]
-    if price <= 0 or drank["saldo_cent"] != before["saldo_cent"] - price:
+    if price <= 0 or price != before["preco_cent"] or drank["saldo_cent"] != before["saldo_cent"] - price:
         raise SmokeFailure(
             f"after one coffee the payer's saldo_cent went {before['saldo_cent']} -> "
-            f"{drank['saldo_cent']} while the month's valor_cent moved by {price}. The balance "
-            "must drop by exactly the price stamped on the coffee."
+            f"{drank['saldo_cent']} while the month's valor_cent moved by {price} (preco_cent was "
+            f"{before['preco_cent']}). The balance must drop by exactly the fixed price stamped on the coffee."
         )
     rep.detail(f"the coffee cost {price} cent; payer saldo_cent is now {drank['saldo_cent']}")
 
-    receiver_before = _read_me(box, receiver, "receiver")["saldo_cent"]
+    keeper_before = _read_me(box, keeper, "keeper")
+    caixa = keeper_before.get("caixa")
+    if not isinstance(caixa, dict) or caixa.get("responsavel_id") != keeper_id:
+        raise SmokeFailure(f"GET /api/eu (keeper) carries caixa {caixa!r}, not one held by {keeper_id}.")
     amount = 500
     resp = payer.post(
         box.base_url + "/api/transferencias",
-        json={"recebedor_id": receiver_id, "valor_cent": amount},
+        json={"recebedor_id": None, "para_caixa": True, "valor_cent": amount},
         timeout=HTTP_TIMEOUT,
     )
     if resp.status_code != 201:
@@ -750,24 +768,28 @@ def step_7_payment(rep: Report, box: Container) -> None:
     transfer_id = resp.json().get("id")
 
     payer_after = _read_me(box, payer, "payer")["saldo_cent"]
-    receiver_view = _read_me(box, receiver, "receiver")
-    receiver_after = receiver_view["saldo_cent"]
-    if payer_after != drank["saldo_cent"] + amount or receiver_after != receiver_before - amount:
+    keeper_view = _read_me(box, keeper, "keeper")
+    cash_before = caixa["dinheiro_cent"]
+    cash_after = (keeper_view.get("caixa") or {}).get("dinheiro_cent")
+    if (payer_after != drank["saldo_cent"] + amount or cash_after != cash_before + amount
+            or keeper_view["saldo_cent"] != keeper_before["saldo_cent"]):
         raise SmokeFailure(
-            f"POST /api/transferencias answered 201 but the balances read back are wrong: payer "
-            f"{drank['saldo_cent']} -> {payer_after} (expected +{amount}), receiver "
-            f"{receiver_before} -> {receiver_after} (expected -{amount})."
+            f"POST /api/transferencias answered 201 but what reads back is wrong: payer saldo_cent "
+            f"{drank['saldo_cent']} -> {payer_after} (expected +{amount}), cash with the keeper "
+            f"{cash_before} -> {cash_after} (expected +{amount}), keeper's own saldo_cent "
+            f"{keeper_before['saldo_cent']} -> {keeper_view['saldo_cent']} (expected unchanged)."
         )
-    pending = [t for t in receiver_view.get("por_confirmar") or [] if t.get("id") == transfer_id]
-    if not pending or pending[0].get("pagador_id") != payer_id or pending[0].get("valor_cent") != amount:
+    pending = [t for t in keeper_view.get("por_confirmar") or [] if t.get("id") == transfer_id]
+    if (not pending or pending[0].get("pagador_id") != payer_id or pending[0].get("para_caixa") is not True
+            or pending[0].get("valor_cent") != amount):
         raise SmokeFailure(
-            f"the receiver's por_confirmar does not list transfer {transfer_id} from {payer_id} "
-            f"for {amount} cent: {receiver_view.get('por_confirmar')!r}. They would have nothing "
+            f"the keeper's por_confirmar does not list cash box payment {transfer_id} from {payer_id} "
+            f"for {amount} cent: {keeper_view.get('por_confirmar')!r}. They would have nothing "
             "to confirm or reject."
         )
     rep.passed(
-        f"payer saldo_cent {drank['saldo_cent']} -> {payer_after}, receiver "
-        f"{receiver_before} -> {receiver_after}, and the payment waits in por_confirmar"
+        f"payer saldo_cent {drank['saldo_cent']} -> {payer_after}, cash with the keeper "
+        f"{cash_before} -> {cash_after}, and the payment waits in the keeper's por_confirmar"
     )
 
 
@@ -846,7 +868,7 @@ def main() -> int:
         "Step 4: GET /api/push/chave carries the field app.js actually reads",
         "Step 5: notification preferences round trip in the shape app.js builds",
         "Step 6: a real push arrives, decrypts, and carries non-empty values",
-        "Step 7: one person drinks, pays another by MB WAY, and both balances move",
+        STEP_7,
     ]
 
     try:

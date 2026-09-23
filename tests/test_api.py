@@ -76,7 +76,7 @@ def test_cookie_secure_atras_de_https(cliente):
 
 def test_marcar_e_apagar_cafe(cliente):
     a = regista(cliente, "Ana")
-    a.post("/api/compras", json={"capsulas": 50})
+    a.post("/api/compras", json={"capsulas": 50, "custo_cent": 1250})
     a.post("/api/cafe"); a.post("/api/cafe")
     eu = a.get("/api/eu").json()
     assert eu["cafes"] == 2 and eu["valor_cent"] == 50 and eu["stock"]["stock"] == 48
@@ -106,18 +106,18 @@ def test_estimativa_usa_previsao_declarada_no_inicio(cliente, relogio):
 def test_stock_baixo_e_data_em_que_acaba(cliente, relogio):
     relogio.set(2026, 9, 11, 9, 0)  # sexta
     a = regista(cliente, "Ana", cafes_dia=2)
-    a.post("/api/compras", json={"capsulas": 10})
+    a.post("/api/compras", json={"capsulas": 10, "custo_cent": 300})
     s = a.get("/api/eu").json()["stock"]
     assert s["baixo"] is True and s["limiar"] == 16
     assert s["acaba_em"] == "2026-09-18" and s["chega_ao_fim_do_mes"] is False
-    a.post("/api/compras", json={"capsulas": 100})
+    a.post("/api/compras", json={"capsulas": 100, "custo_cent": 2500})
     s = a.get("/api/eu").json()["stock"]
     assert s["baixo"] is False and s["chega_ao_fim_do_mes"] is True
 
 
 def test_apagar_compra_so_quem_registou_e_sem_stock_negativo(cliente):
     a = regista(cliente, "Ana"); b = regista(cliente, "Bea")
-    a.post("/api/compras", json={"capsulas": 2})
+    a.post("/api/compras", json={"capsulas": 2, "custo_cent": 50})
     cid = a.get("/api/escritorio").json()["compras"][0]["id"]
     assert b.delete(f"/api/compras/{cid}").status_code == 403
     a.post("/api/cafe")
@@ -127,21 +127,25 @@ def test_apagar_compra_so_quem_registou_e_sem_stock_negativo(cliente):
     assert a.get("/api/eu").json()["stock"]["stock"] == 0
 
 
-def test_config(cliente):
+def test_config_muda_o_limiar_e_ignora_o_preco(cliente):
+    """O preço deixou de se editar: um formulário antigo em cache ainda manda
+    os dois campos, e o limiar tem de ficar gravado na mesma."""
     a = regista(cliente, "Ana")
-    a.put("/api/config", json={"preco_cent": 30, "stock_baixo": 5})
+    assert a.put("/api/config", json={"preco_cent": 30, "stock_baixo": 5}).status_code == 200
+    with db.conn() as c:
+        assert db.get_config(c, "preco_cent") == "25"
     a.post("/api/cafe")
     eu = a.get("/api/eu").json()
-    assert eu["preco_cent"] == 30 and eu["valor_cent"] == 30 and eu["stock"]["limiar"] == 5
+    assert eu["preco_cent"] == 25 and eu["valor_cent"] == 25 and eu["stock"]["limiar"] == 5
 
 
-# ---------- escritório e fecho de mês ----------
+# ---------- escritório ----------
 
 def _mes_com_cafes(cliente, relogio):
     """Agosto: Ana 3 cafés, Bea 1. Setembro: Ana 1. Devolve (ana, bea)."""
     relogio.set(2026, 8, 10, 9, 0)
     a = regista(cliente, "Ana"); b = regista(cliente, "Bea")
-    a.post("/api/compras", json={"capsulas": 50})
+    a.post("/api/compras", json={"capsulas": 50, "custo_cent": 1250})
     for _ in range(3):
         a.post("/api/cafe")
     b.post("/api/cafe")
@@ -161,55 +165,53 @@ def test_escritorio_por_mes(cliente, relogio):
     assert e["stock"]["stock"] == 45
 
 
-def test_pagamento_registado_por_quem_recebe(cliente, relogio):
+def test_rotas_antigas_de_pagamentos_respondem_410(cliente, relogio):
     a, b = _mes_com_cafes(cliente, relogio)
     ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
-    # Bea recebe o dinheiro da Ana
+    detalhe = {"detail": "Os pagamentos mensais acabaram. Actualiza a app."}
+    # o corpo que um cliente antigo manda não pode transformar o 410 num 422
     r = b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]})
-    assert r.status_code == 201 and r.json()["valor_cent"] == 75
-    ant = a.get("/api/eu").json()["mes_anterior"]
-    assert ant["pago"] is True and ant["pagamento"]["recebedor"] == "Bea" and ant["valor_cent"] == 75
-    # duplicado
-    assert b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]}).status_code == 409
-    # mês corrente não se fecha
-    assert b.post("/api/pagamentos", json={"mes": "2026-09", "pagador_id": ids["Ana"]}).status_code == 400
-    # Bea marca-se a si própria
-    assert b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Bea"]}).status_code == 201
+    assert r.status_code == 410 and r.json() == detalhe
+    r = b.delete(f"/api/pagamentos/2026-08/{ids['Ana']}")
+    assert r.status_code == 410 and r.json() == detalhe
+    with db.conn() as c:
+        assert c.execute("SELECT COUNT(*) AS n FROM transferencias").fetchone()["n"] == 0
+
+
+def test_desfazer_cafe_num_mes_com_pagamentos_ja_nao_da_409(cliente, relogio):
+    a, b = _mes_com_cafes(cliente, relogio)
+    ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
+    assert b.post("/api/transferencias", json={"recebedor_id": ids["Ana"], "valor_cent": 25}).status_code == 201
+    # o último café da Bea é de Agosto, um mês que antes ficaria congelado
+    assert b.delete("/api/cafe/ultimo").status_code == 200
     linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
-    assert linha["Bea"]["pago"] and linha["Bea"]["pagamento"]["recebedor_id"] == ids["Bea"]
+    assert linha["Bea"]["cafes"] == 0 and linha["Bea"]["valor_cent"] == 0
 
 
-def test_anular_pagamento_so_pelo_recebedor(cliente, relogio):
-    a, b = _mes_com_cafes(cliente, relogio)
-    ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
-    b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]})
-    assert a.delete(f"/api/pagamentos/2026-08/{ids['Ana']}").status_code == 403
-    assert b.delete(f"/api/pagamentos/2026-08/{ids['Ana']}").status_code == 200
-    assert a.get("/api/eu").json()["mes_anterior"]["pago"] is False
-
-
-def test_mes_pago_fica_congelado(cliente, relogio):
-    a, b = _mes_com_cafes(cliente, relogio)
-    ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
-    b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]})
-    # a Bea tenta apagar o café dela de Agosto: recusa
-    assert b.delete("/api/cafe/ultimo").status_code == 409
-    # a Ana apaga o de Setembro: pode (o último dela é de Setembro)
-    assert a.delete("/api/cafe/ultimo").status_code == 200
-    # o preço muda depois do pagamento: o snapshot não muda
-    a.put("/api/config", json={"preco_cent": 100})
-    assert a.get("/api/eu").json()["mes_anterior"]["valor_cent"] == 75
-    linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
-    assert linha["Ana"]["valor_cent"] == 75 and linha["Bea"]["valor_cent"] == 100  # Bea ainda não pagou
-
-
-def test_cafe_novo_nunca_cai_em_mes_pago(cliente, relogio):
-    a, b = _mes_com_cafes(cliente, relogio)
-    ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
-    b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]})
+def test_preco_gravado_no_cafe_nao_muda_com_compras_seguintes(cliente, relogio):
+    """O preço é o do momento em que o café foi gravado: uma caixa mais cara
+    depois não re-precifica os cafés antigos."""
+    a, _ = _mes_com_cafes(cliente, relogio)
+    a.post("/api/compras", json={"capsulas": 10, "custo_cent": 600})
+    e = a.get("/api/escritorio", params={"mes": "2026-08"}).json()
+    linha = {p["nome"]: p for p in e["pessoas"]}
+    assert linha["Ana"]["valor_cent"] == 75 and linha["Bea"]["valor_cent"] == 25
+    # 45 + 10 cápsulas, 1250 + 600 - 5 × 25 por recuperar: 1725 / 55 = 31,4
+    assert e["preco_cent"] == 31
     a.post("/api/cafe")
-    linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
-    assert linha["Ana"]["cafes"] == 3
+    assert a.get("/api/eu").json()["valor_cent"] == 25 + 31
+
+
+def test_escritorio_tem_pote_saldos_e_custos(cliente, relogio):
+    a, b = _mes_com_cafes(cliente, relogio)
+    e = b.get("/api/escritorio").json()
+    assert e["pote"] == {"valor_cent": 1250 - 5 * 25, "capsulas": 45}
+    assert {p["nome"]: p["saldo_cent"] for p in e["pessoas"]} == {"Ana": 1250 - 4 * 25, "Bea": -25}
+    compra = e["compras"][0]
+    assert compra["custo_cent"] == 1250 and compra["custo_estimado"] is False
+    assert compra["pode_editar"] is False  # foi a Ana que registou; quem pergunta é a Bea
+    assert a.get("/api/escritorio").json()["compras"][0]["pode_editar"] is True
+    assert "pago" not in e["pessoas"][0] and "pagamento" not in e["pessoas"][0]
 
 
 # ---------- sincronização offline (cliente_id / em) ----------
@@ -262,20 +264,23 @@ def test_em_sem_fuso_ou_invalido_usa_agora_sem_rebentar(cliente, relogio):
     assert r_invalido.json()["em"] == "2026-09-11T09:00:00+00:00"
 
 
-def test_em_em_mes_ja_pago_usa_agora(cliente, relogio):
+def test_em_no_mes_anterior_e_aceite_mesmo_depois_de_pagamentos(cliente, relogio):
+    """Sem fecho de mês, um café offline de dias antes fica no mês em que foi
+    bebido, mesmo que a pessoa já tenha pago entretanto; leva o preço do
+    momento em que chegou ao servidor."""
     relogio.set(2026, 8, 10, 9, 0)
     a = regista(cliente, "Ana")
     b = regista(cliente, "Bea")
     a.post("/api/cafe")  # café real de Agosto
     relogio.set(2026, 9, 1, 9, 0)
     ids = {u["nome"]: u["id"] for u in cliente.get("/api/utilizadores").json()}
-    b.post("/api/pagamentos", json={"mes": "2026-08", "pagador_id": ids["Ana"]})
-    # 3 de Setembro: 28 de Agosto está dentro da janela dos 7 dias, mas cai num mês já pago
+    a.post("/api/transferencias", json={"recebedor_id": ids["Bea"], "valor_cent": 25})
+    # 3 de Setembro: 28 de Agosto está dentro da janela dos 7 dias
     relogio.set(2026, 9, 3, 9, 0)
     r = a.post("/api/cafe", json={"em": "2026-08-28T09:00:00.000Z"})
-    assert r.json()["em"] == "2026-09-03T09:00:00+00:00"
+    assert r.json()["em"] == "2026-08-28T09:00:00+00:00"
     linha = {p["nome"]: p for p in a.get("/api/escritorio", params={"mes": "2026-08"}).json()["pessoas"]}
-    assert linha["Ana"]["cafes"] == 1  # o café novo não entrou no mês já pago
+    assert linha["Ana"]["cafes"] == 2 and linha["Ana"]["valor_cent"] == 50
 
 
 def test_corrida_entre_select_e_insert_do_cliente_id_devolve_duplicado(cliente, monkeypatch):
@@ -283,28 +288,30 @@ def test_corrida_entre_select_e_insert_do_cliente_id_devolve_duplicado(cliente, 
     SELECT que a deteção de duplicado faz e o INSERT que grava: uma ligação
     instável que retransmite um café cujo primeiro pedido ainda está em voo é
     exactamente o caso que a idempotência existe para cobrir. Isto força a
-    corrida de forma determinística ao fazer _aceita_em (chamada depois do
-    SELECT e antes do INSERT) inserir a linha concorrente a meio, para que o
-    INSERT de marcar_cafe perca a corrida e tenha de recuperar em vez de
+    corrida de forma determinística ao fazer _preco_corrente (chamada depois
+    do SELECT e antes do INSERT) inserir a linha concorrente a meio, para que
+    o INSERT de marcar_cafe perca a corrida e tenha de recuperar em vez de
     devolver 500."""
     a = regista(cliente, "Ana")
+    ana_id = cliente.get("/api/utilizadores").json()[0]["id"]
     cliente_id = "corrida-1"
 
-    original = app_main._aceita_em
+    original = app_main._preco_corrente
     inserida = {"feito": False}
 
-    def _aceita_em_que_insere_a_meio(c, em_bruto, agora, pagador_id):
-        em = original(c, em_bruto, agora, pagador_id)
+    def _preco_que_insere_a_meio(c, *args):
+        preco = original(c, *args)
         if not inserida["feito"]:
             inserida["feito"] = True
             # simula outra ligação a ganhar a corrida e a inserir primeiro
+            em = logic.agora()
             c.execute(
-                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id) VALUES (?, ?, ?, ?)",
-                (pagador_id, em.isoformat(), logic.mes_de(em), cliente_id),
+                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id, valor_cent) VALUES (?, ?, ?, ?, ?)",
+                (ana_id, em.isoformat(), logic.mes_de(em), cliente_id, preco),
             )
-        return em
+        return preco
 
-    monkeypatch.setattr(app_main, "_aceita_em", _aceita_em_que_insere_a_meio)
+    monkeypatch.setattr(app_main, "_preco_corrente", _preco_que_insere_a_meio)
     r = a.post("/api/cafe", json={"cliente_id": cliente_id})
 
     assert r.status_code == 200, r.text

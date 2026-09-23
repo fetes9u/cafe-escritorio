@@ -160,10 +160,12 @@ def test_compra_notifica_outros_utilizadores(cliente, push_configurado):
     r = regista(cliente, "Rui")
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
 
-    assert a.post("/api/compras", json={"capsulas": 20}).status_code == 201
+    assert a.post("/api/compras", json={"capsulas": 20, "custo_cent": 500}).status_code == 201
 
     push_configurado.assert_called_once()
     assert _endpoints_avisados(push_configurado) == {"https://push.example/rui"}
+    mensagem = json.loads(push_configurado.call_args.kwargs["data"])["corpo"]
+    assert mensagem == "Ana repôs 20 cápsulas (5,00 €)"
 
 
 def test_registo_notifica_utilizadores_existentes(cliente, push_configurado):
@@ -176,20 +178,32 @@ def test_registo_notifica_utilizadores_existentes(cliente, push_configurado):
     assert _endpoints_avisados(push_configurado) == {"https://push.example/ana"}
 
 
-def test_pagamento_notifica_o_pagador(cliente, push_configurado, relogio):
+def test_pagamento_dirigido_respeita_quem_desligou_o_evento(cliente, push_configurado):
+    """O envio a uma só pessoa não passa por cima das preferências: quem
+    desligou "pagamento" não recebe nem o aviso que é só para si."""
     a = regista(cliente, "Ana")
     r = regista(cliente, "Rui")
     rui_id = next(x["id"] for x in cliente.get("/api/utilizadores").json() if x["nome"] == "Rui")
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
-    assert r.post("/api/cafe").status_code == 201
+    r.put("/api/notificacoes/preferencias", json={"pagamento": False})
 
-    relogio.set(2026, 10, 1, 9, 0)
-    assert a.post("/api/pagamentos", json={"mes": "2026-09", "pagador_id": rui_id}).status_code == 201
+    assert a.post("/api/transferencias", json={"recebedor_id": rui_id, "valor_cent": 500}).status_code == 201
+
+    push_configurado.assert_not_called()
+
+
+def test_pagamento_dirigido_mantem_o_formato_do_payload(cliente, push_configurado):
+    a = regista(cliente, "Ana")
+    r = regista(cliente, "Rui")
+    rui_id = next(x["id"] for x in cliente.get("/api/utilizadores").json() if x["nome"] == "Rui")
+    r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
+
+    assert a.post("/api/transferencias", json={"recebedor_id": rui_id, "valor_cent": 500}).status_code == 201
 
     push_configurado.assert_called_once()
-    assert _endpoints_avisados(push_configurado) == {"https://push.example/rui"}
-    mensagem = json.loads(push_configurado.call_args.kwargs["data"])["corpo"]
-    assert "Rui" in mensagem and "Ana" in mensagem
+    assert json.loads(push_configurado.call_args.kwargs["data"]) == {
+        "titulo": "Pagamento", "corpo": "Ana registou 5,00 € pagos a ti", "url": "/", "evento": "pagamento",
+    }
 
 
 # ---------- stock_baixo ----------
@@ -200,7 +214,7 @@ def test_stock_baixo_dispara_na_transicao_e_nao_se_repete_ate_repor(cliente, pus
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
     r.put("/api/notificacoes/preferencias", json={"cafe": False})
 
-    assert a.post("/api/compras", json={"capsulas": 6}).status_code == 201
+    assert a.post("/api/compras", json={"capsulas": 6, "custo_cent": 150}).status_code == 201
     assert a.put("/api/config", json={"stock_baixo": 3}).status_code == 200
     push_configurado.reset_mock()  # ignore the "compra" notification from the setup above
 
@@ -238,7 +252,7 @@ def test_sincronizacao_tardia_nao_notifica_cafe_mas_stock_baixo_notifica(cliente
     a = regista(cliente, "Ana")
     r = regista(cliente, "Rui")
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
-    a.post("/api/compras", json={"capsulas": 6})
+    a.post("/api/compras", json={"capsulas": 6, "custo_cent": 150})
     a.put("/api/config", json={"stock_baixo": 5})
     push_configurado.reset_mock()  # ignore the "compra" notification from the setup above
 
@@ -258,7 +272,7 @@ def test_stock_baixo_nao_dispara_enquanto_se_mantem_acima_do_limiar(cliente, pus
     r.post("/api/push/subscricoes", json={"endpoint": "https://push.example/rui", "p256dh": "p", "auth": "a"})
     r.put("/api/notificacoes/preferencias", json={"cafe": False})
 
-    assert a.post("/api/compras", json={"capsulas": 20}).status_code == 201
+    assert a.post("/api/compras", json={"capsulas": 20, "custo_cent": 500}).status_code == 201
     assert a.put("/api/config", json={"stock_baixo": 3}).status_code == 200
     push_configurado.reset_mock()  # ignore the "compra" notification from the setup above
 

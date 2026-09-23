@@ -105,8 +105,15 @@ A migração **não** escolhe o responsável: escolhe-se na app depois do deploy
   `valor_cent` e/ou o destino. **Editar um pagamento confirmado volta a pô-lo por
   confirmar** (`confirmada_em = NULL`), e o lado de quem recebe é avisado. Cada campo
   alterado fica no histórico.
-- Pagador e recebedor nunca são a mesma pessoa; `para_caixa` e `de_caixa` nunca
-  juntos; `de_caixa` exige recebedor; `para_caixa` não tem recebedor.
+- Num pagamento entre duas pessoas (sem caixa), pagador e recebedor nunca são a mesma
+  pessoa. Com caixa, o responsável pode estar nos dois lados: reembolsar-se da caixa
+  (`de_caixa` para si próprio) ou pôr dinheiro seu na caixa (`para_caixa`).
+- **Quando o lado de quem paga e o de quem recebe são a mesma pessoa, o pagamento
+  confirma-se sozinho** ao ser registado (`confirmada_em` = agora, sem push), e o
+  mesmo depois de uma edição que acabe nesse estado. Não fica por confirmar na lista
+  do próprio.
+- `para_caixa` e `de_caixa` nunca juntos; `de_caixa` exige recebedor; `para_caixa` não
+  tem recebedor.
 
 ### 3.5 Sugestão
 
@@ -243,9 +250,10 @@ calculados na mesma.
   "paga_pela_caixa": false, "nota"}`. Com `custo_cent = 0`, `paga_pela_caixa` grava
   sempre 0.
 - `PATCH /api/compras/{id}`: qualquer subconjunto de `{"custo_cent", "capsulas",
-  "paga_pela_caixa"}`. Quem: quem registou, ou toda a gente se não tiver autor. 409 se
-  `capsulas` deixar o stock negativo. Histórico por campo. Põe `custo_estimado = 0`
-  quando muda o custo.
+  "paga_pela_caixa"}`, com `custo_cent` em **0..1000000, como no POST** (0 torna a
+  compra numa oferta e força `paga_pela_caixa = 0`). Quem: quem registou, ou toda a
+  gente se não tiver autor. 409 se `capsulas` deixar o stock negativo. Histórico por
+  campo. Põe `custo_estimado = 0` quando muda o custo.
 - `GET /api/preco/simular`: **sai** (404).
 
 ### 4.10 `PUT /api/config` (muda)
@@ -327,15 +335,23 @@ mostram o nome (`null` → `Caixa` para destino, `ninguém` para responsável);
 5. Nada mais muda de dados: as compras ficam como estão (a oferta de 0,01 € corrige-se
    na app, com histórico), e o responsável pela caixa escolhe-se na app.
 
+**Voltar atrás:** depois de reconstruída a `transferencias` (ids a aceitar NULL), a
+imagem 0.11.0 já não serve para esta base. Voltar atrás = repor o backup tirado antes
+do deploy da 0.12.0. O README diz isto.
+
 ## 7. Testes
 
 - Invariante de 3.1 depois de uma sequência mista (cafés, compra do bolso, compra pela
   caixa, oferta, pagamento à caixa, a uma pessoa, saída da caixa, edição, anulação).
 - **O caso real** reconstruído: oferta de 77 a custo 0, 95 cafés a 0,25 € repartidos
   como em produção (Ana 20, Júnior 25, João 17, Luís 12, Faria 11, Diogo M. 10),
-  compra da Ana de 41 a 9,84 € do bolso, responsável = Ana; todos pagam à caixa o que
-  devem → dinheiro na caixa = 18,75 € e o saldo da Ana = +4,84 €; a Ana reembolsa-se
-  4,84 € da caixa → caixa 13,91 €, fundo 13,91 €, saldos todos a 0.
+  compra da Ana de 41 a 9,84 € do bolso (o valor registado hoje; se a Ana o corrigir
+  para os 11,04 € que pagou, a caixa fica com 12,71 €), responsável = Ana; todos pagam
+  à caixa o que devem → dinheiro na caixa = 18,75 € e o saldo da Ana = +4,84 €; a Ana
+  reembolsa-se 4,84 € da caixa (confirma-se sozinho; o `por_confirmar` dela fica
+  vazio) → caixa 13,91 €, fundo 13,91 €, saldos todos a 0.
+- A oferta: `PATCH` de uma compra para `custo_cent = 0` grava `paga_pela_caixa = 0` e
+  uma linha de histórico.
 - Permissões: editar só o lado de quem paga; `de_caixa` só o responsável; confirmar e
   anular pelos lados certos; responsável a confirmar pagamentos à caixa.
 - Editar confirmado volta a por confirmar; cada campo alterado fica no histórico com

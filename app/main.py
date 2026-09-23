@@ -207,13 +207,53 @@ def _resumo_stock(c, hoje) -> dict:
     return logic.resumo_stock(_stock(c), ritmo, hoje, int(db.get_config(c, "stock_baixo")))
 
 
-def _pagamento(c, mes: str, pagador_id: int) -> dict | None:
-    row = c.execute(
-        "SELECT p.*, r.nome AS recebedor FROM pagamentos p JOIN utilizadores r ON r.id = p.recebedor_id "
-        "WHERE p.mes = ? AND p.pagador_id = ?",
-        (mes, pagador_id),
-    ).fetchone()
-    return dict(row) if row else None
+def _valor_por_utilizador(c, mes: str) -> dict[int, int]:
+    rows = c.execute(
+        "SELECT utilizador_id, SUM(valor_cent) AS v FROM cafes WHERE mes = ? GROUP BY utilizador_id", (mes,)
+    ).fetchall()
+    return {r["utilizador_id"]: r["v"] for r in rows}
+
+
+def _por_recuperar(c) -> int:
+    """O pote: o que as compras custaram menos o que os cafés já cobraram. É,
+    por construção, a soma dos saldos de toda a gente."""
+    custo = c.execute("SELECT COALESCE(SUM(custo_cent), 0) AS v FROM compras").fetchone()["v"]
+    cobrado = c.execute("SELECT COALESCE(SUM(valor_cent), 0) AS v FROM cafes").fetchone()["v"]
+    return custo - cobrado
+
+
+def _preco_corrente(c, capsulas_novas: int = 0, custo_novo_cent: int = 0) -> int:
+    """Preço do próximo café; com uma compra hipotética somada, o preço que
+    ficaria em vigor se ela fosse gravada agora. O último café é o último
+    gravado (por id), não o de `em` mais recente: um café offline sincronizado
+    tarde foi precificado agora."""
+    ultimo = c.execute("SELECT valor_cent FROM cafes ORDER BY id DESC LIMIT 1").fetchone()
+    ultimo_preco = ultimo["valor_cent"] if ultimo else int(db.get_config(c, "preco_cent"))
+    return logic.preco_corrente(
+        _por_recuperar(c) + custo_novo_cent, _stock(c) + capsulas_novas, ultimo_preco
+    )
+
+
+def _saldos(c) -> list[dict]:
+    """Saldo corrido de cada pessoa, calculado e nunca guardado: pagamentos
+    activos feitos, menos recebidos, mais compras registadas, menos cafés."""
+    rows = c.execute(
+        """
+        SELECT u.id, u.nome,
+            COALESCE((SELECT SUM(valor_cent) FROM transferencias
+                      WHERE pagador_id = u.id AND anulada_em IS NULL), 0)
+          - COALESCE((SELECT SUM(valor_cent) FROM transferencias
+                      WHERE recebedor_id = u.id AND anulada_em IS NULL), 0)
+          + COALESCE((SELECT SUM(custo_cent) FROM compras WHERE utilizador_id = u.id), 0)
+          - COALESCE((SELECT SUM(valor_cent) FROM cafes WHERE utilizador_id = u.id), 0) AS saldo_cent
+        FROM utilizadores u ORDER BY u.nome COLLATE NOCASE
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _saldo(c, utilizador_id: int) -> int:
+    return next(s["saldo_cent"] for s in _saldos(c) if s["id"] == utilizador_id)
 
 
 def _euros(cent: int) -> str:
@@ -269,13 +309,40 @@ def _destinatarios_subscricoes(c, evento: str, autor_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _subscricoes_de(c, evento: str, utilizador_id: int) -> list[dict]:
+    """Subscrições de uma só pessoa, se não desligou este evento."""
+    rows = c.execute(
+        """
+        SELECT s.endpoint, s.p256dh, s.auth
+        FROM subscricoes s
+        WHERE s.utilizador_id = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM notificacoes_desligadas d
+              WHERE d.utilizador_id = s.utilizador_id AND d.evento = ?
+          )
+        """,
+        (utilizador_id, evento),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _enviar_notificacao(evento: str, mensagem: str, autor_id: int) -> None:
-    """Corre em BackgroundTasks: nunca no caminho do pedido. Um push service
-    lento não pode atrasar a resposta à acção que o despoletou."""
+    """Difunde a todos menos ao autor. Corre em BackgroundTasks: nunca no
+    caminho do pedido. Um push service lento não pode atrasar a resposta à
+    acção que o despoletou."""
+    _entregar(evento, mensagem, lambda c: _destinatarios_subscricoes(c, evento, autor_id))
+
+
+def _enviar_notificacao_a(evento: str, mensagem: str, destinatario_id: int) -> None:
+    """Envio dirigido a uma pessoa (pagamentos): os outros não têm nada com isso."""
+    _entregar(evento, mensagem, lambda c: _subscricoes_de(c, evento, destinatario_id))
+
+
+def _entregar(evento: str, mensagem: str, destinatarios_de) -> None:
     if not _vapid_configurado():
         return
     with db.conn() as c:
-        destinatarios = _destinatarios_subscricoes(c, evento, autor_id)
+        destinatarios = destinatarios_de(c)
     if not destinatarios:
         return
     vv = _vapid_instance()
@@ -303,6 +370,10 @@ def _avisar(background_tasks: BackgroundTasks, evento: str, mensagem: str, autor
     background_tasks.add_task(_enviar_notificacao, evento, mensagem, autor_id)
 
 
+def _avisar_so(background_tasks: BackgroundTasks, evento: str, mensagem: str, destinatario_id: int) -> None:
+    background_tasks.add_task(_enviar_notificacao_a, evento, mensagem, destinatario_id)
+
+
 def _dispara_stock_baixo(c, background_tasks: BackgroundTasks, autor_id: int, stock_antes: int) -> None:
     """Dispara só na transição para abaixo do limiar, ou ao chegar a zero:
     nunca a cada acção enquanto o stock já está baixo, senão repete-se até
@@ -321,33 +392,37 @@ def _dispara_stock_baixo(c, background_tasks: BackgroundTasks, autor_id: int, st
 def eu(u: dict = Depends(utilizador_actual)):
     hoje = _hoje()
     mes = hoje.strftime("%Y-%m")
-    anterior = logic.mes_anterior(mes)
     with db.conn() as c:
-        preco = int(db.get_config(c, "preco_cent"))
+        preco = _preco_corrente(c)
         cafes = _cafes_por_utilizador(c, mes).get(u["id"], 0)
-        cafes_ant = _cafes_por_utilizador(c, anterior).get(u["id"], 0)
+        valor = _valor_por_utilizador(c, mes).get(u["id"], 0)
         ultimo = c.execute(
             "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY em DESC LIMIT 1", (u["id"],)
         ).fetchone()
         estimativa = logic.estimativa_mes(cafes, hoje, mes, u["cafes_dia"], _data_registo(u["criado_em"]))
-        pag = _pagamento(c, anterior, u["id"])
+        saldos = _saldos(c)
+        por_confirmar = [dict(r) for r in c.execute(
+            "SELECT t.id, t.pagador_id, p.nome AS pagador, t.valor_cent, t.em FROM transferencias t "
+            "JOIN utilizadores p ON p.id = t.pagador_id "
+            "WHERE t.recebedor_id = ? AND t.confirmada_em IS NULL AND t.anulada_em IS NULL "
+            "ORDER BY t.em DESC, t.id DESC",
+            (u["id"],),
+        ).fetchall()]
         stock = _resumo_stock(c, hoje)
+    saldo = next(s["saldo_cent"] for s in saldos if s["id"] == u["id"])
+    outros = [(s["id"], s["nome"], s["saldo_cent"]) for s in saldos if s["id"] != u["id"]]
     return {
         "utilizador": {"id": u["id"], "nome": u["nome"], "cafes_dia": u["cafes_dia"]},
         "preco_cent": preco,
         "mes": mes,
         "cafes": cafes,
-        "valor_cent": cafes * preco,
+        "valor_cent": valor,
         "estimativa_cafes": estimativa,
-        "estimativa_cent": estimativa * preco,
+        "estimativa_cent": valor + (estimativa - cafes) * preco,
         "ultimo_cafe": ultimo["em"] if ultimo else None,
-        "mes_anterior": {
-            "mes": anterior,
-            "cafes": cafes_ant,
-            "valor_cent": pag["valor_cent"] if pag else cafes_ant * preco,
-            "pago": pag is not None,
-            "pagamento": pag,
-        },
+        "saldo_cent": saldo,
+        "sugestao": logic.sugestao_pagamento(saldo, outros),
+        "por_confirmar": por_confirmar,
         "stock": stock,
     }
 
@@ -384,11 +459,9 @@ JANELA_FUTURO = timedelta(minutes=5)
 ATRASO_SEM_NOTIFICAR = timedelta(minutes=15)
 
 
-def _aceita_em(c, em_bruto: str | None, agora: datetime, pagador_id: int) -> datetime:
+def _aceita_em(em_bruto: str | None, agora: datetime) -> datetime:
     """Regras da secção 4 da spec, por esta ordem: sem fuso ou não parseável
-    conta como ausente; fora da janela [agora-7d, agora+5min] usa agora; e um
-    instante que caia num mês já pago por esta pessoa também usa agora, para
-    não desalinhar a fotografia do pagamento da contagem recalculada."""
+    conta como ausente; fora da janela [agora-7d, agora+5min] usa agora."""
     if not em_bruto:
         return agora
     try:
@@ -398,11 +471,6 @@ def _aceita_em(c, em_bruto: str | None, agora: datetime, pagador_id: int) -> dat
     if em.tzinfo is None:
         return agora
     if not (agora - JANELA_PASSADO <= em <= agora + JANELA_FUTURO):
-        return agora
-    mes = logic.mes_de(em)
-    if c.execute(
-        "SELECT 1 FROM pagamentos WHERE mes = ? AND pagador_id = ?", (mes, pagador_id)
-    ).fetchone():
         return agora
     return em
 
@@ -421,12 +489,15 @@ def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_
                 return JSONResponse(status_code=200, content={
                     "ok": True, "cliente_id": cliente_id, "em": existente["em"], "duplicado": True,
                 })
-        em = _aceita_em(c, body.em if body else None, agora, u["id"])
+        em = _aceita_em(body.em if body else None, agora)
         stock_antes = _stock(c)
+        # O preço fica no café para sempre: é o do momento em que o servidor o
+        # grava, com a cápsula que ele gasta ainda contada no stock.
+        preco = _preco_corrente(c)
         try:
             c.execute(
-                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id) VALUES (?, ?, ?, ?)",
-                (u["id"], em.isoformat(), logic.mes_de(em), cliente_id),
+                "INSERT INTO cafes (utilizador_id, em, mes, cliente_id, valor_cent) VALUES (?, ?, ?, ?, ?)",
+                (u["id"], em.isoformat(), logic.mes_de(em), cliente_id, preco),
             )
         except sqlite3.IntegrityError as exc:
             # Duas requisições com o mesmo cliente_id podem intercalar-se entre
@@ -455,12 +526,10 @@ def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_
 def desfazer_cafe(u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
         ultimo = c.execute(
-            "SELECT id, mes FROM cafes WHERE utilizador_id = ? ORDER BY id DESC LIMIT 1", (u["id"],)
+            "SELECT id FROM cafes WHERE utilizador_id = ? ORDER BY id DESC LIMIT 1", (u["id"],)
         ).fetchone()
         if not ultimo:
             raise HTTPException(404, "Não há café para desfazer.")
-        if c.execute("SELECT 1 FROM pagamentos WHERE mes = ?", (ultimo["mes"],)).fetchone():
-            raise HTTPException(409, "Esse mês já tem pagamentos registados; já não se pode alterar.")
         c.execute("DELETE FROM cafes WHERE id = ?", (ultimo["id"],))
     return {"ok": True}
 
@@ -499,24 +568,32 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
     mes_actual = hoje.strftime("%Y-%m")
     mes = mes or mes_actual
     with db.conn() as c:
-        preco = int(db.get_config(c, "preco_cent"))
+        preco = _preco_corrente(c)
         por_user = _cafes_por_utilizador(c, mes)
-        pessoas = []
-        for r in c.execute("SELECT id, nome FROM utilizadores ORDER BY nome COLLATE NOCASE").fetchall():
-            n = por_user.get(r["id"], 0)
-            pag = _pagamento(c, mes, r["id"])
-            pessoas.append({
-                "id": r["id"], "nome": r["nome"], "cafes": n,
-                "valor_cent": pag["valor_cent"] if pag else n * preco,
-                "pago": pag is not None, "pagamento": pag,
-            })
+        valor_por_user = _valor_por_utilizador(c, mes)
+        pessoas = [
+            {
+                "id": s["id"], "nome": s["nome"], "cafes": por_user.get(s["id"], 0),
+                "valor_cent": valor_por_user.get(s["id"], 0), "saldo_cent": s["saldo_cent"],
+            }
+            for s in _saldos(c)
+        ]
         meses = [r["mes"] for r in c.execute("SELECT DISTINCT mes FROM cafes ORDER BY mes DESC").fetchall()]
         if mes_actual not in meses:
             meses.insert(0, mes_actual)
-        compras = [dict(r) for r in c.execute(
-            "SELECT co.id, co.capsulas, co.em, co.nota, co.utilizador_id, u.nome FROM compras co "
-            "LEFT JOIN utilizadores u ON u.id = co.utilizador_id ORDER BY co.id DESC LIMIT 20"
-        ).fetchall()]
+        compras = [
+            {
+                **dict(r),
+                "custo_estimado": bool(r["custo_estimado"]),
+                "pode_editar": r["utilizador_id"] is None or r["utilizador_id"] == u["id"],
+            }
+            for r in c.execute(
+                "SELECT co.id, co.capsulas, co.custo_cent, co.custo_estimado, co.em, co.nota, "
+                "co.utilizador_id, u.nome FROM compras co "
+                "LEFT JOIN utilizadores u ON u.id = co.utilizador_id ORDER BY co.id DESC LIMIT 20"
+            ).fetchall()
+        ]
+        pote = {"valor_cent": _por_recuperar(c), "capsulas": _stock(c)}
         stock = _resumo_stock(c, hoje)
     total = sum(p["cafes"] for p in pessoas)
     return {
@@ -528,6 +605,7 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
         "pessoas": pessoas,
         "total_cafes": total,
         "total_cent": sum(p["valor_cent"] for p in pessoas),
+        "pote": pote,
         "stock": stock,
         "compras": compras,
     }
@@ -535,6 +613,7 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
 
 class Compra(BaseModel):
     capsulas: int = Field(ge=1, le=10_000)
+    custo_cent: int = Field(ge=1, le=1_000_000)
     nota: str | None = Field(default=None, max_length=80)
 
 
@@ -542,11 +621,41 @@ class Compra(BaseModel):
 def registar_compra(body: Compra, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
         c.execute(
-            "INSERT INTO compras (utilizador_id, capsulas, em, nota) VALUES (?, ?, ?, ?)",
-            (u["id"], body.capsulas, logic.agora().isoformat(), body.nota),
+            "INSERT INTO compras (utilizador_id, capsulas, custo_cent, em, nota) VALUES (?, ?, ?, ?, ?)",
+            (u["id"], body.capsulas, body.custo_cent, logic.agora().isoformat(), body.nota),
         )
-    _avisar(background_tasks, "compra", f"{u['nome']} repôs {body.capsulas} cápsulas", u["id"])
+    _avisar(
+        background_tasks, "compra",
+        f"{u['nome']} repôs {body.capsulas} cápsulas ({_euros(body.custo_cent)} €)", u["id"],
+    )
     return {"ok": True}
+
+
+class CorrecaoCusto(BaseModel):
+    custo_cent: int = Field(ge=1, le=1_000_000)
+
+
+@app.patch("/api/compras/{compra_id}")
+def corrigir_custo(compra_id: int, body: CorrecaoCusto, u: dict = Depends(utilizador_actual)):
+    """Quem registou a compra (ou qualquer pessoa, se não tem autor) corrige o
+    custo; um custo corrigido deixa de ser estimado."""
+    with db.conn() as c:
+        compra = c.execute("SELECT utilizador_id FROM compras WHERE id = ?", (compra_id,)).fetchone()
+        if not compra:
+            raise HTTPException(404, "Entrada não existe.")
+        if compra["utilizador_id"] is not None and compra["utilizador_id"] != u["id"]:
+            raise HTTPException(403, "Só quem registou a entrada lhe pode corrigir o custo.")
+        c.execute(
+            "UPDATE compras SET custo_cent = ?, custo_estimado = 0 WHERE id = ?", (body.custo_cent, compra_id)
+        )
+    return {"ok": True}
+
+
+@app.get("/api/preco/simular")
+def simular_preco(capsulas: int = Query(ge=1, le=10_000), custo_cent: int = Query(ge=1, le=1_000_000),
+                  u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        return {"preco_cent": _preco_corrente(c, capsulas, custo_cent)}
 
 
 @app.delete("/api/compras/{compra_id}")
@@ -565,57 +674,130 @@ def apagar_compra(compra_id: int, background_tasks: BackgroundTasks, u: dict = D
     return {"ok": True}
 
 
-class Pagamento(BaseModel):
-    mes: str = Field(pattern=r"^\d{4}-\d{2}$")
-    pagador_id: int
+# ---------- pagamentos por MB WAY ----------
+
+@app.post("/api/pagamentos", include_in_schema=False)
+@app.delete("/api/pagamentos/{mes}/{pagador_id}", include_in_schema=False)
+def pagamentos_mensais_acabaram():
+    """Um cliente antigo em cache ainda chama estas rotas: um 410 com uma frase
+    que se perceba, em vez de um 404 ou de um 422 por causa do corpo."""
+    raise HTTPException(410, "Os pagamentos mensais acabaram. Actualiza a app.")
 
 
-@app.post("/api/pagamentos", status_code=201)
-def registar_pagamento(body: Pagamento, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
-    """Quem está autenticado é quem recebeu o dinheiro."""
-    mes_actual = logic.mes_de(logic.agora())
-    if body.mes >= mes_actual:
-        raise HTTPException(400, "Só se fecham meses já terminados.")
+class NovaTransferencia(BaseModel):
+    recebedor_id: int
+    valor_cent: int = Field(ge=1, le=100_000)
+
+
+@app.post("/api/transferencias", status_code=201)
+def registar_transferencia(body: NovaTransferencia, background_tasks: BackgroundTasks,
+                           u: dict = Depends(utilizador_actual)):
+    """Quem está autenticado é quem pagou. Conta para o saldo desde já."""
+    if body.recebedor_id == u["id"]:
+        raise HTTPException(400, "Não se paga a si próprio.")
+    em = logic.agora().isoformat()
     with db.conn() as c:
-        pagador = c.execute("SELECT nome FROM utilizadores WHERE id = ?", (body.pagador_id,)).fetchone()
-        if not pagador:
-            raise HTTPException(404, "Pagador não existe.")
-        if _pagamento(c, body.mes, body.pagador_id):
-            raise HTTPException(409, "Esse pagamento já está registado.")
-        preco = int(db.get_config(c, "preco_cent"))
-        n = _cafes_por_utilizador(c, body.mes).get(body.pagador_id, 0)
-        c.execute(
-            "INSERT INTO pagamentos (mes, pagador_id, recebedor_id, capsulas, valor_cent, em) VALUES (?, ?, ?, ?, ?, ?)",
-            (body.mes, body.pagador_id, u["id"], n, n * preco, logic.agora().isoformat()),
+        if not c.execute("SELECT 1 FROM utilizadores WHERE id = ?", (body.recebedor_id,)).fetchone():
+            raise HTTPException(404, "Essa pessoa não existe.")
+        cur = c.execute(
+            "INSERT INTO transferencias (pagador_id, recebedor_id, valor_cent, em) VALUES (?, ?, ?, ?)",
+            (u["id"], body.recebedor_id, body.valor_cent, em),
         )
-    valor_cent = n * preco
-    _avisar(background_tasks, "pagamento", f"{pagador['nome']} pagou {_euros(valor_cent)} EUR a {u['nome']}", u["id"])
-    return {"ok": True, "capsulas": n, "valor_cent": valor_cent}
+    _avisar_so(
+        background_tasks, "pagamento",
+        f"{u['nome']} registou {_euros(body.valor_cent)} € pagos a ti", body.recebedor_id,
+    )
+    return {
+        "id": cur.lastrowid, "pagador_id": u["id"], "recebedor_id": body.recebedor_id,
+        "valor_cent": body.valor_cent, "em": em,
+    }
 
 
-@app.delete("/api/pagamentos/{mes}/{pagador_id}")
-def anular_pagamento(mes: str, pagador_id: int, u: dict = Depends(utilizador_actual)):
-    """Só quem recebeu pode anular."""
+def _transferencia_aberta(c, transferencia_id: int, u: dict, so_recebedor: bool) -> dict:
+    t = c.execute("SELECT * FROM transferencias WHERE id = ?", (transferencia_id,)).fetchone()
+    if not t:
+        raise HTTPException(404, "Pagamento não existe.")
+    partes = (t["recebedor_id"],) if so_recebedor else (t["pagador_id"], t["recebedor_id"])
+    if u["id"] not in partes:
+        raise HTTPException(403, "Esse pagamento não é contigo.")
+    if t["confirmada_em"] or t["anulada_em"]:
+        raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
+    return dict(t)
+
+
+@app.post("/api/transferencias/{transferencia_id}/confirmar")
+def confirmar_transferencia(transferencia_id: int, u: dict = Depends(utilizador_actual)):
+    """Só quem recebeu confirma. Confirmado fica imutável."""
     with db.conn() as c:
-        pag = _pagamento(c, mes, pagador_id)
-        if not pag:
-            raise HTTPException(404, "Pagamento não existe.")
-        if pag["recebedor_id"] != u["id"]:
-            raise HTTPException(403, f"Só {pag['recebedor']} pode anular este pagamento.")
-        c.execute("DELETE FROM pagamentos WHERE id = ?", (pag["id"],))
+        _transferencia_aberta(c, transferencia_id, u, so_recebedor=True)
+        cur = c.execute(
+            "UPDATE transferencias SET confirmada_em = ? "
+            "WHERE id = ? AND confirmada_em IS NULL AND anulada_em IS NULL",
+            (logic.agora().isoformat(), transferencia_id),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
     return {"ok": True}
 
 
+@app.post("/api/transferencias/{transferencia_id}/anular")
+def anular_transferencia(transferencia_id: int, background_tasks: BackgroundTasks,
+                         u: dict = Depends(utilizador_actual)):
+    """O pagador anula um engano; o recebedor diz "Não recebi". Avisa-se só a
+    outra parte."""
+    with db.conn() as c:
+        t = _transferencia_aberta(c, transferencia_id, u, so_recebedor=False)
+        cur = c.execute(
+            "UPDATE transferencias SET anulada_em = ?, anulada_por = ? "
+            "WHERE id = ? AND confirmada_em IS NULL AND anulada_em IS NULL",
+            (logic.agora().isoformat(), u["id"], transferencia_id),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
+    valor = _euros(t["valor_cent"])
+    if u["id"] == t["pagador_id"]:
+        _avisar_so(background_tasks, "pagamento", f"{u['nome']} anulou o pagamento de {valor} €", t["recebedor_id"])
+    else:
+        _avisar_so(background_tasks, "pagamento", f"{u['nome']} disse que não recebeu os {valor} €", t["pagador_id"])
+    return {"ok": True}
+
+
+@app.get("/api/movimentos")
+def movimentos(u: dict = Depends(utilizador_actual)):
+    """Os meus movimentos em dinheiro, do mais recente para o mais antigo."""
+    with db.conn() as c:
+        saldo = _saldo(c, u["id"])
+        transferencias = [dict(r) for r in c.execute(
+            "SELECT t.id, CASE WHEN t.pagador_id = :eu THEN 'paguei' ELSE 'recebi' END AS sentido, "
+            "o.id AS outro_id, o.nome AS outro, t.valor_cent, t.em, t.confirmada_em, t.anulada_em, "
+            "t.anulada_por FROM transferencias t "
+            "JOIN utilizadores o ON o.id = CASE WHEN t.pagador_id = :eu THEN t.recebedor_id ELSE t.pagador_id END "
+            "WHERE t.pagador_id = :eu OR t.recebedor_id = :eu ORDER BY t.em DESC, t.id DESC",
+            {"eu": u["id"]},
+        ).fetchall()]
+        compras = [
+            {**dict(r), "custo_estimado": bool(r["custo_estimado"])}
+            for r in c.execute(
+                "SELECT id, capsulas, custo_cent, custo_estimado, em FROM compras "
+                "WHERE utilizador_id = ? ORDER BY em DESC, id DESC",
+                (u["id"],),
+            ).fetchall()
+        ]
+        meses = [dict(r) for r in c.execute(
+            "SELECT mes, COUNT(*) AS cafes, SUM(valor_cent) AS valor_cent FROM cafes "
+            "WHERE utilizador_id = ? GROUP BY mes ORDER BY mes DESC",
+            (u["id"],),
+        ).fetchall()]
+    return {"saldo_cent": saldo, "transferencias": transferencias, "compras": compras, "meses": meses}
+
+
 class Config(BaseModel):
-    preco_cent: int | None = Field(default=None, ge=1, le=10_000)
     stock_baixo: int | None = Field(default=None, ge=0, le=10_000)
 
 
 @app.put("/api/config")
 def alterar_config(body: Config, u: dict = Depends(utilizador_actual)):
     with db.conn() as c:
-        if body.preco_cent is not None:
-            db.set_config(c, "preco_cent", str(body.preco_cent))
         if body.stock_baixo is not None:
             db.set_config(c, "stock_baixo", str(body.stock_baixo))
     return {"ok": True}

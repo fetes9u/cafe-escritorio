@@ -126,6 +126,33 @@ function formatarAlteracao(a) {
   return `${dataCurta(a.em)} ${horaCurta(a.em)} · ${quem} · ${rotulo} ${antes} → ${depois}`;
 }
 
+// A pagamento's destination moving between "Caixa" and a person writes TWO
+// historico_alteracoes rows (campo recebedor_id and campo para_caixa):
+// shown apart they read as two edits, not one. The two calls to
+// regista_alteracao() land microseconds apart (each takes its own
+// timestamp), so they cannot be paired by exact em equality; what does hold
+// is CAMPOS_EDITAVEIS_TRANSFERENCIA's write order ("valor_cent",
+// "recebedor_id", "para_caixa"), which always inserts recebedor_id
+// immediately before para_caixa when both changed, and the endpoint orders
+// by em then id. So pair by adjacency (the row right before) plus the same
+// utilizador, with a same-minute check on em as a guard against a
+// coincidental para_caixa-only row landing after an unrelated recebedor_id
+// one. Drops the para_caixa half of a matched pair; the paired recebedor_id
+// row alone already renders "Caixa" for a null destination
+// (textoValorHistorico), so it reads as the single "destino Caixa → Pedro" /
+// "Pedro → Caixa" line the spec wants. A lone recebedor_id change (person to
+// person, no adjacent para_caixa row) is left untouched, and a lone
+// para_caixa row (no adjacent recebedor_id row) is kept too, in case one is
+// ever written on its own.
+function juntarAlteracoesDestino(alteracoes) {
+  return alteracoes.filter((a, i) => {
+    if (a.campo !== "para_caixa") return true;
+    const b = alteracoes[i - 1];
+    return !(b && b.campo === "recebedor_id" && b.utilizador === a.utilizador
+      && String(b.em).slice(0, 16) === String(a.em).slice(0, 16));
+  });
+}
+
 // Toggles the change history under a row (spec 5.4). `ul` is the
 // `.historico-lista` element to fill and show/hide; `id` is omitted (left
 // undefined) for entidade=config, the one entity that has none. Fetched
@@ -138,7 +165,8 @@ async function expandirHistorico(ul, entidade, id) {
     try {
       const qs = id != null ? `?entidade=${entidade}&id=${id}` : `?entidade=${entidade}`;
       const r = await api("GET", `/historico-alteracoes${qs}`);
-      ul.innerHTML = (r.alteracoes || []).map((a) => `<li>${formatarAlteracao(a)}</li>`).join("") || "<li>Sem alterações.</li>";
+      const alteracoes = juntarAlteracoesDestino(r.alteracoes || []);
+      ul.innerHTML = alteracoes.map((a) => `<li>${formatarAlteracao(a)}</li>`).join("") || "<li>Sem alterações.</li>";
       ul.dataset.carregado = "1";
     } catch (erro) { toast(erro.message, true); return; }
   }

@@ -215,6 +215,28 @@ def test_no_preco_simular_call_is_left_anywhere_in_the_client():
     assert "compra-preview" not in html
 
 
+def test_destination_change_pairs_para_caixa_with_recebedor_id_into_one_line():
+    """A pagamento's destination moving between Caixa and a person writes two
+    historico_alteracoes rows (campo para_caixa and campo recebedor_id).
+    They cannot be paired by exact em equality (regista_alteracao takes a
+    fresh timestamp per row), so the client pairs by write order instead:
+    CAMPOS_EDITAVEIS_TRANSFERENCIA always inserts recebedor_id immediately
+    before para_caixa, so the expander checks the row right before plus the
+    same utilizador. The expander must pair them into a single line before
+    rendering."""
+    js = _app_js()
+    assert "function juntarAlteracoesDestino(" in js
+    inicio = js.index("function juntarAlteracoesDestino(")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    assert '"para_caixa"' in corpo
+    assert '"recebedor_id"' in corpo
+    assert "alteracoes[i - 1]" in corpo
+    assert "b.utilizador === a.utilizador" in corpo
+    inicio = js.index("async function expandirHistorico(")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    assert "juntarAlteracoesDestino(" in corpo
+
+
 def test_index_has_the_new_caixa_sections_with_their_ids():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     for id_ in (

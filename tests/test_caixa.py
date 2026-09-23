@@ -457,6 +457,23 @@ def test_alterar_capsulas_e_quem_pagou_uma_compra(cliente):
     assert (m["paga_pela_caixa"], m["editada"]) == (True, True)
 
 
+def test_com_o_stock_ja_negativo_corrigir_o_custo_passa(cliente):
+    """Como em produção: cafés marcados antes de registada a caixa deixam o
+    stock abaixo de zero, e a oferta corrige-se na app na mesma."""
+    a = regista(cliente, "Ana")
+    a.post("/api/compras", json={"capsulas": 2, "custo_cent": 1})
+    for _ in range(3):
+        a.post("/api/cafe")
+    compra = a.get("/api/escritorio").json()["compras"][0]["id"]
+    assert a.get("/api/eu").json()["stock"]["stock"] == -1
+    assert a.patch(f"/api/compras/{compra}", json={"custo_cent": 0}).status_code == 200
+    assert [(h["campo"], h["antes"], h["depois"]) for h in _alteracoes(a, "compra", compra)] == [
+        ("custo_cent", "1", "0"),
+    ]
+    assert a.patch(f"/api/compras/{compra}", json={"capsulas": 3}).status_code == 200
+    assert a.patch(f"/api/compras/{compra}", json={"capsulas": 2}).status_code == 409
+
+
 # ---------- definições ----------
 
 def test_definicoes_com_historico_por_chave(cliente, relogio):

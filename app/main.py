@@ -740,7 +740,9 @@ def alterar_compra(compra_id: int, body: AlteracaoCompra, u: dict = Depends(util
             else body.paga_pela_caixa,
         }
         novo["paga_pela_caixa"] = novo["paga_pela_caixa"] and novo["custo_cent"] > 0
-        if _stock(c) - compra["capsulas"] + novo["capsulas"] < 0:
+        # Só quando tira cápsulas: com o stock já negativo (cafés marcados antes
+        # de registada a caixa), corrigir o custo tem de passar.
+        if novo["capsulas"] < compra["capsulas"] and _stock(c) - compra["capsulas"] + novo["capsulas"] < 0:
             raise HTTPException(409, "Não se pode: o stock ficaria negativo.")
         if novo["paga_pela_caixa"] and not compra["paga_pela_caixa"]:
             _exige_responsavel(c)

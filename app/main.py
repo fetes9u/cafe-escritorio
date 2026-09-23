@@ -770,6 +770,9 @@ def apagar_compra(compra_id: int, background_tasks: BackgroundTasks, u: dict = D
         stock_antes = _stock(c)
         if stock_antes - compra["capsulas"] < 0:
             raise HTTPException(409, "Não se pode apagar: o stock ficaria negativo.")
+        # Fica no histórico antes de apagar, para o rasto não desaparecer com a
+        # linha (AUTOINCREMENT impede que uma compra nova herde este id).
+        db.regista_alteracao(c, "compra", compra_id, "apagada", False, True, u["id"])
         c.execute("DELETE FROM compras WHERE id = ?", (compra_id,))
         _dispara_stock_baixo(c, background_tasks, u["id"], stock_antes)
     return {"ok": True}

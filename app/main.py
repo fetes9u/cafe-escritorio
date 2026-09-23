@@ -214,29 +214,25 @@ def _valor_por_utilizador(c, mes: str) -> dict[int, int]:
     return {r["utilizador_id"]: r["v"] for r in rows}
 
 
-def _por_recuperar(c) -> int:
-    """O pote: o que as compras custaram menos o que os cafés já cobraram. É,
-    por construção, a soma dos saldos de toda a gente."""
-    custo = c.execute("SELECT COALESCE(SUM(custo_cent), 0) AS v FROM compras").fetchone()["v"]
-    cobrado = c.execute("SELECT COALESCE(SUM(valor_cent), 0) AS v FROM cafes").fetchone()["v"]
-    return custo - cobrado
+def _preco(c) -> int:
+    """O preço fixo das Definições, que cada café grava no momento em que o
+    servidor o grava."""
+    return int(db.get_config(c, "preco_cent"))
 
 
-def _preco_corrente(c, capsulas_novas: int = 0, custo_novo_cent: int = 0) -> int:
-    """Preço do próximo café; com uma compra hipotética somada, o preço que
-    ficaria em vigor se ela fosse gravada agora. O último café é o último
-    gravado (por id), não o de `em` mais recente: um café offline sincronizado
-    tarde foi precificado agora."""
-    ultimo = c.execute("SELECT valor_cent FROM cafes ORDER BY id DESC LIMIT 1").fetchone()
-    ultimo_preco = ultimo["valor_cent"] if ultimo else int(db.get_config(c, "preco_cent"))
-    return logic.preco_corrente(
-        _por_recuperar(c) + custo_novo_cent, _stock(c) + capsulas_novas, ultimo_preco
-    )
+def _responsavel(c) -> dict | None:
+    """Quem guarda a caixa ({"id", "nome"}), ou None se ninguém."""
+    row = c.execute(
+        "SELECT u.id, u.nome FROM config k JOIN utilizadores u ON u.id = CAST(k.valor AS INTEGER) "
+        "WHERE k.chave = 'caixa_responsavel_id'"
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def _saldos(c) -> list[dict]:
     """Saldo corrido de cada pessoa, calculado e nunca guardado: pagamentos
-    activos feitos, menos recebidos, mais compras registadas, menos cafés."""
+    activos feitos, menos recebidos, mais compras pagas do próprio bolso,
+    menos cafés. O lado da caixa de um pagamento está a NULL e não conta aqui."""
     rows = c.execute(
         """
         SELECT u.id, u.nome,
@@ -244,7 +240,8 @@ def _saldos(c) -> list[dict]:
                       WHERE pagador_id = u.id AND anulada_em IS NULL), 0)
           - COALESCE((SELECT SUM(valor_cent) FROM transferencias
                       WHERE recebedor_id = u.id AND anulada_em IS NULL), 0)
-          + COALESCE((SELECT SUM(custo_cent) FROM compras WHERE utilizador_id = u.id), 0)
+          + COALESCE((SELECT SUM(custo_cent) FROM compras
+                      WHERE utilizador_id = u.id AND paga_pela_caixa = 0), 0)
           - COALESCE((SELECT SUM(valor_cent) FROM cafes WHERE utilizador_id = u.id), 0) AS saldo_cent
         FROM utilizadores u ORDER BY u.nome COLLATE NOCASE
         """
@@ -254,6 +251,60 @@ def _saldos(c) -> list[dict]:
 
 def _saldo(c, utilizador_id: int) -> int:
     return next(s["saldo_cent"] for s in _saldos(c) if s["id"] == utilizador_id)
+
+
+def _saldo_caixa(c) -> int:
+    """Saídas da caixa menos entradas, mais compras que ela pagou. Negativo
+    quando quem a guarda tem dinheiro consigo."""
+    return c.execute(
+        """
+        SELECT COALESCE((SELECT SUM(valor_cent) FROM transferencias
+                         WHERE de_caixa = 1 AND anulada_em IS NULL), 0)
+             - COALESCE((SELECT SUM(valor_cent) FROM transferencias
+                         WHERE para_caixa = 1 AND anulada_em IS NULL), 0)
+             + COALESCE((SELECT SUM(custo_cent) FROM compras WHERE paga_pela_caixa = 1), 0) AS v
+        """
+    ).fetchone()["v"]
+
+
+def _fundo(c) -> int:
+    """O que a oferta e a margem criaram: cafés cobrados menos compras. Por
+    construção, soma dos saldos das pessoas + saldo da caixa = −fundo."""
+    cobrado = c.execute("SELECT COALESCE(SUM(valor_cent), 0) AS v FROM cafes").fetchone()["v"]
+    custo = c.execute("SELECT COALESCE(SUM(custo_cent), 0) AS v FROM compras").fetchone()["v"]
+    return cobrado - custo
+
+
+SEM_RESPONSAVEL = "Ainda não há ninguém responsável pela caixa. Escolhe nas Definições."
+
+
+def _exige_responsavel(c) -> dict:
+    responsavel = _responsavel(c)
+    if responsavel is None:
+        raise HTTPException(409, SEM_RESPONSAVEL)
+    return responsavel
+
+
+def _lados(t, responsavel_id: int | None) -> tuple[int | None, int | None]:
+    """(lado de quem paga, lado de quem recebe) de um pagamento: quem guarda a
+    caixa actua pela caixa."""
+    paga = responsavel_id if t["de_caixa"] else t["pagador_id"]
+    recebe = responsavel_id if t["para_caixa"] else t["recebedor_id"]
+    return paga, recebe
+
+
+# Campos cuja alteração marca um pagamento como `editada`; confirmar e anular não.
+CAMPOS_EDITAVEIS_TRANSFERENCIA = ("valor_cent", "recebedor_id", "para_caixa")
+
+
+def _editadas(c, entidade: str, campos: tuple[str, ...] | None = None) -> set[int]:
+    """Ids de `entidade` com linhas no histórico (só destes campos, se dados)."""
+    sql = "SELECT DISTINCT entidade_id FROM historico_alteracoes WHERE entidade = ?"
+    params: list = [entidade]
+    if campos:
+        sql += f" AND campo IN ({', '.join('?' * len(campos))})"
+        params += campos
+    return {r["entidade_id"] for r in c.execute(sql, params).fetchall()}
 
 
 def _euros(cent: int) -> str:
@@ -374,6 +425,13 @@ def _avisar_so(background_tasks: BackgroundTasks, evento: str, mensagem: str, de
     background_tasks.add_task(_enviar_notificacao_a, evento, mensagem, destinatario_id)
 
 
+def _avisar_lado(background_tasks: BackgroundTasks, mensagem: str, lado_id: int | None, autor_id: int) -> None:
+    """Push de pagamento a um lado de um pagamento: nunca ao autor, e nada se
+    o lado é a caixa sem ninguém a guardá-la."""
+    if lado_id is not None and lado_id != autor_id:
+        _avisar_so(background_tasks, "pagamento", mensagem, lado_id)
+
+
 def _dispara_stock_baixo(c, background_tasks: BackgroundTasks, autor_id: int, stock_antes: int) -> None:
     """Dispara só na transição para abaixo do limiar, ou ao chegar a zero:
     nunca a cada acção enquanto o stock já está baixo, senão repete-se até
@@ -393,24 +451,34 @@ def eu(u: dict = Depends(utilizador_actual)):
     hoje = _hoje()
     mes = hoje.strftime("%Y-%m")
     with db.conn() as c:
-        preco = _preco_corrente(c)
+        preco = _preco(c)
         cafes = _cafes_por_utilizador(c, mes).get(u["id"], 0)
         valor = _valor_por_utilizador(c, mes).get(u["id"], 0)
         ultimo = c.execute(
             "SELECT em FROM cafes WHERE utilizador_id = ? ORDER BY em DESC LIMIT 1", (u["id"],)
         ).fetchone()
         estimativa = logic.estimativa_mes(cafes, hoje, mes, u["cafes_dia"], _data_registo(u["criado_em"]))
-        saldos = _saldos(c)
-        por_confirmar = [dict(r) for r in c.execute(
-            "SELECT t.id, t.pagador_id, p.nome AS pagador, t.valor_cent, t.em FROM transferencias t "
-            "JOIN utilizadores p ON p.id = t.pagador_id "
-            "WHERE t.recebedor_id = ? AND t.confirmada_em IS NULL AND t.anulada_em IS NULL "
-            "ORDER BY t.em DESC, t.id DESC",
-            (u["id"],),
-        ).fetchall()]
+        saldo = _saldo(c, u["id"])
+        responsavel = _responsavel(c)
+        sou_responsavel = responsavel is not None and responsavel["id"] == u["id"]
+        # O lado de quem recebe: eu como recebedor, ou a caixa se a guardo.
+        por_confirmar = [
+            {**dict(r), "para_caixa": bool(r["para_caixa"])}
+            for r in c.execute(
+                "SELECT t.id, t.pagador_id, COALESCE(p.nome, 'Caixa') AS pagador, t.para_caixa, "
+                "t.valor_cent, t.em FROM transferencias t "
+                "LEFT JOIN utilizadores p ON p.id = t.pagador_id "
+                "WHERE (t.recebedor_id = :eu OR (t.para_caixa = 1 AND :responsavel)) "
+                "AND t.confirmada_em IS NULL AND t.anulada_em IS NULL "
+                "ORDER BY t.em DESC, t.id DESC",
+                {"eu": u["id"], "responsavel": sou_responsavel},
+            ).fetchall()
+        ]
+        caixa = None
+        if responsavel:
+            caixa = {"responsavel_id": responsavel["id"], "responsavel": responsavel["nome"],
+                     "dinheiro_cent": -_saldo_caixa(c)}
         stock = _resumo_stock(c, hoje)
-    saldo = next(s["saldo_cent"] for s in saldos if s["id"] == u["id"])
-    outros = [(s["id"], s["nome"], s["saldo_cent"]) for s in saldos if s["id"] != u["id"]]
     return {
         "utilizador": {"id": u["id"], "nome": u["nome"], "cafes_dia": u["cafes_dia"]},
         "preco_cent": preco,
@@ -421,7 +489,8 @@ def eu(u: dict = Depends(utilizador_actual)):
         "estimativa_cent": valor + (estimativa - cafes) * preco,
         "ultimo_cafe": ultimo["em"] if ultimo else None,
         "saldo_cent": saldo,
-        "sugestao": logic.sugestao_pagamento(saldo, outros),
+        "sugestao": logic.sugestao_pagamento(saldo, responsavel["nome"] if responsavel else None),
+        "caixa": caixa,
         "por_confirmar": por_confirmar,
         "stock": stock,
     }
@@ -491,9 +560,8 @@ def marcar_cafe(background_tasks: BackgroundTasks, u: dict = Depends(utilizador_
                 })
         em = _aceita_em(body.em if body else None, agora)
         stock_antes = _stock(c)
-        # O preço fica no café para sempre: é o do momento em que o servidor o
-        # grava, com a cápsula que ele gasta ainda contada no stock.
-        preco = _preco_corrente(c)
+        # O preço fica no café para sempre: é o do momento em que o servidor o grava.
+        preco = _preco(c)
         try:
             c.execute(
                 "INSERT INTO cafes (utilizador_id, em, mes, cliente_id, valor_cent) VALUES (?, ?, ?, ?, ?)",
@@ -568,7 +636,7 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
     mes_actual = hoje.strftime("%Y-%m")
     mes = mes or mes_actual
     with db.conn() as c:
-        preco = _preco_corrente(c)
+        preco = _preco(c)
         por_user = _cafes_por_utilizador(c, mes)
         valor_por_user = _valor_por_utilizador(c, mes)
         pessoas = [
@@ -581,19 +649,29 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
         meses = [r["mes"] for r in c.execute("SELECT DISTINCT mes FROM cafes ORDER BY mes DESC").fetchall()]
         if mes_actual not in meses:
             meses.insert(0, mes_actual)
+        editadas = _editadas(c, "compra")
         compras = [
             {
                 **dict(r),
                 "custo_estimado": bool(r["custo_estimado"]),
+                "paga_pela_caixa": bool(r["paga_pela_caixa"]),
+                "editada": r["id"] in editadas,
                 "pode_editar": r["utilizador_id"] is None or r["utilizador_id"] == u["id"],
             }
             for r in c.execute(
-                "SELECT co.id, co.capsulas, co.custo_cent, co.custo_estimado, co.em, co.nota, "
-                "co.utilizador_id, u.nome FROM compras co "
+                "SELECT co.id, co.capsulas, co.custo_cent, co.custo_estimado, co.paga_pela_caixa, co.em, "
+                "co.nota, co.utilizador_id, u.nome FROM compras co "
                 "LEFT JOIN utilizadores u ON u.id = co.utilizador_id ORDER BY co.id DESC LIMIT 20"
             ).fetchall()
         ]
-        pote = {"valor_cent": _por_recuperar(c), "capsulas": _stock(c)}
+        responsavel = _responsavel(c)
+        caixa = {
+            "responsavel_id": responsavel["id"] if responsavel else None,
+            "responsavel": responsavel["nome"] if responsavel else None,
+            "dinheiro_cent": -_saldo_caixa(c),
+            "por_receber_cent": -sum(p["saldo_cent"] for p in pessoas if p["saldo_cent"] < 0),
+            "fundo_cent": _fundo(c),
+        }
         stock = _resumo_stock(c, hoje)
     total = sum(p["cafes"] for p in pessoas)
     return {
@@ -605,7 +683,7 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
         "pessoas": pessoas,
         "total_cafes": total,
         "total_cent": sum(p["valor_cent"] for p in pessoas),
-        "pote": pote,
+        "caixa": caixa,
         "stock": stock,
         "compras": compras,
     }
@@ -613,16 +691,22 @@ def escritorio(mes: str | None = None, u: dict = Depends(utilizador_actual)):
 
 class Compra(BaseModel):
     capsulas: int = Field(ge=1, le=10_000)
-    custo_cent: int = Field(ge=1, le=1_000_000)
+    custo_cent: int = Field(ge=0, le=1_000_000)  # 0 = oferta
+    paga_pela_caixa: bool = False
     nota: str | None = Field(default=None, max_length=80)
 
 
 @app.post("/api/compras", status_code=201)
 def registar_compra(body: Compra, background_tasks: BackgroundTasks, u: dict = Depends(utilizador_actual)):
+    # Uma oferta não sai de lado nenhum.
+    paga_pela_caixa = body.paga_pela_caixa and body.custo_cent > 0
     with db.conn() as c:
+        if paga_pela_caixa:
+            _exige_responsavel(c)
         c.execute(
-            "INSERT INTO compras (utilizador_id, capsulas, custo_cent, em, nota) VALUES (?, ?, ?, ?, ?)",
-            (u["id"], body.capsulas, body.custo_cent, logic.agora().isoformat(), body.nota),
+            "INSERT INTO compras (utilizador_id, capsulas, custo_cent, paga_pela_caixa, em, nota) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (u["id"], body.capsulas, body.custo_cent, paga_pela_caixa, logic.agora().isoformat(), body.nota),
         )
     _avisar(
         background_tasks, "compra",
@@ -631,31 +715,46 @@ def registar_compra(body: Compra, background_tasks: BackgroundTasks, u: dict = D
     return {"ok": True}
 
 
-class CorrecaoCusto(BaseModel):
-    custo_cent: int = Field(ge=1, le=1_000_000)
+class AlteracaoCompra(BaseModel):
+    custo_cent: int | None = Field(default=None, ge=0, le=1_000_000)
+    capsulas: int | None = Field(default=None, ge=1, le=10_000)
+    paga_pela_caixa: bool | None = None
 
 
 @app.patch("/api/compras/{compra_id}")
-def corrigir_custo(compra_id: int, body: CorrecaoCusto, u: dict = Depends(utilizador_actual)):
+def alterar_compra(compra_id: int, body: AlteracaoCompra, u: dict = Depends(utilizador_actual)):
     """Quem registou a compra (ou qualquer pessoa, se não tem autor) corrige o
-    custo; um custo corrigido deixa de ser estimado."""
+    custo, as cápsulas ou quem pagou; cada campo alterado fica no histórico.
+    Um custo corrigido deixa de ser estimado, e um custo 0 é uma oferta, que
+    nunca é paga pela caixa."""
     with db.conn() as c:
-        compra = c.execute("SELECT utilizador_id FROM compras WHERE id = ?", (compra_id,)).fetchone()
+        compra = c.execute("SELECT * FROM compras WHERE id = ?", (compra_id,)).fetchone()
         if not compra:
             raise HTTPException(404, "Entrada não existe.")
         if compra["utilizador_id"] is not None and compra["utilizador_id"] != u["id"]:
-            raise HTTPException(403, "Só quem registou a entrada lhe pode corrigir o custo.")
+            raise HTTPException(403, "Só quem registou a entrada a pode alterar.")
+        novo = {
+            "custo_cent": compra["custo_cent"] if body.custo_cent is None else body.custo_cent,
+            "capsulas": compra["capsulas"] if body.capsulas is None else body.capsulas,
+            "paga_pela_caixa": bool(compra["paga_pela_caixa"]) if body.paga_pela_caixa is None
+            else body.paga_pela_caixa,
+        }
+        novo["paga_pela_caixa"] = novo["paga_pela_caixa"] and novo["custo_cent"] > 0
+        if _stock(c) - compra["capsulas"] + novo["capsulas"] < 0:
+            raise HTTPException(409, "Não se pode: o stock ficaria negativo.")
+        if novo["paga_pela_caixa"] and not compra["paga_pela_caixa"]:
+            _exige_responsavel(c)
+        for campo in ("custo_cent", "capsulas", "paga_pela_caixa"):
+            antes = bool(compra[campo]) if campo == "paga_pela_caixa" else compra[campo]
+            if novo[campo] != antes:
+                db.regista_alteracao(c, "compra", compra_id, campo, antes, novo[campo], u["id"])
         c.execute(
-            "UPDATE compras SET custo_cent = ?, custo_estimado = 0 WHERE id = ?", (body.custo_cent, compra_id)
+            "UPDATE compras SET custo_cent = ?, capsulas = ?, paga_pela_caixa = ?, "
+            "custo_estimado = CASE WHEN ? THEN 0 ELSE custo_estimado END WHERE id = ?",
+            (novo["custo_cent"], novo["capsulas"], novo["paga_pela_caixa"], body.custo_cent is not None,
+             compra_id),
         )
     return {"ok": True}
-
-
-@app.get("/api/preco/simular")
-def simular_preco(capsulas: int = Query(ge=1, le=10_000), custo_cent: int = Query(ge=1, le=1_000_000),
-                  u: dict = Depends(utilizador_actual)):
-    with db.conn() as c:
-        return {"preco_cent": _preco_corrente(c, capsulas, custo_cent)}
 
 
 @app.delete("/api/compras/{compra_id}")
@@ -685,51 +784,94 @@ def pagamentos_mensais_acabaram():
 
 
 class NovaTransferencia(BaseModel):
-    recebedor_id: int
+    recebedor_id: int | None = None
+    para_caixa: bool = False
+    de_caixa: bool = False
     valor_cent: int = Field(ge=1, le=100_000)
+
+
+def _destino_valido(pagador_id: int | None, recebedor_id: int | None, para_caixa: bool, de_caixa: bool) -> None:
+    """As combinações da secção 3.4: nunca as duas pontas na caixa; de_caixa
+    exige recebedor; para_caixa não o tem; entre duas pessoas, pessoas
+    diferentes."""
+    if para_caixa and de_caixa:
+        raise HTTPException(400, "Um pagamento não entra e sai da caixa ao mesmo tempo.")
+    if para_caixa and recebedor_id is not None:
+        raise HTTPException(400, "Um pagamento à caixa não tem recebedor.")
+    if not para_caixa and recebedor_id is None:
+        raise HTTPException(400, "Falta a quem foi o pagamento.")
+    if not (para_caixa or de_caixa) and recebedor_id == pagador_id:
+        raise HTTPException(400, "Não se paga a si próprio.")
+
+
+def _existe_utilizador(c, utilizador_id: int) -> None:
+    if not c.execute("SELECT 1 FROM utilizadores WHERE id = ?", (utilizador_id,)).fetchone():
+        raise HTTPException(404, "Essa pessoa não existe.")
 
 
 @app.post("/api/transferencias", status_code=201)
 def registar_transferencia(body: NovaTransferencia, background_tasks: BackgroundTasks,
                            u: dict = Depends(utilizador_actual)):
-    """Quem está autenticado é quem pagou. Conta para o saldo desde já."""
-    if body.recebedor_id == u["id"]:
-        raise HTTPException(400, "Não se paga a si próprio.")
+    """Quem está autenticado é quem pagou, ou a caixa se `de_caixa` (só quem a
+    guarda). Conta para o saldo desde já; se quem paga e quem recebe são a
+    mesma pessoa (quem guarda a caixa), fica logo confirmado."""
+    pagador_id = None if body.de_caixa else u["id"]
+    _destino_valido(pagador_id, body.recebedor_id, body.para_caixa, body.de_caixa)
     em = logic.agora().isoformat()
     with db.conn() as c:
-        if not c.execute("SELECT 1 FROM utilizadores WHERE id = ?", (body.recebedor_id,)).fetchone():
-            raise HTTPException(404, "Essa pessoa não existe.")
+        responsavel_id = None
+        if body.para_caixa or body.de_caixa:
+            responsavel_id = _exige_responsavel(c)["id"]
+            if body.de_caixa and responsavel_id != u["id"]:
+                raise HTTPException(403, "Só quem guarda a caixa regista saídas da caixa.")
+        if body.recebedor_id is not None:
+            _existe_utilizador(c, body.recebedor_id)
+        linha = {"pagador_id": pagador_id, "recebedor_id": body.recebedor_id,
+                 "para_caixa": body.para_caixa, "de_caixa": body.de_caixa}
+        paga, recebe = _lados(linha, responsavel_id)
         cur = c.execute(
-            "INSERT INTO transferencias (pagador_id, recebedor_id, valor_cent, em) VALUES (?, ?, ?, ?)",
-            (u["id"], body.recebedor_id, body.valor_cent, em),
+            "INSERT INTO transferencias (pagador_id, recebedor_id, para_caixa, de_caixa, valor_cent, em, "
+            "confirmada_em) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pagador_id, body.recebedor_id, body.para_caixa, body.de_caixa, body.valor_cent, em,
+             em if paga == recebe else None),
         )
-    _avisar_so(
-        background_tasks, "pagamento",
-        f"{u['nome']} registou {_euros(body.valor_cent)} € pagos a ti", body.recebedor_id,
-    )
+    valor = _euros(body.valor_cent)
+    if body.para_caixa:
+        corpo = f"{u['nome']} registou {valor} € pagos à caixa"
+    elif body.de_caixa:
+        corpo = f"{u['nome']} registou {valor} € da caixa para ti"
+    else:
+        corpo = f"{u['nome']} registou {valor} € pagos a ti"
+    _avisar_lado(background_tasks, corpo, recebe, u["id"])
     return {
-        "id": cur.lastrowid, "pagador_id": u["id"], "recebedor_id": body.recebedor_id,
-        "valor_cent": body.valor_cent, "em": em,
+        "id": cur.lastrowid, "pagador_id": pagador_id, "recebedor_id": body.recebedor_id,
+        "para_caixa": body.para_caixa, "de_caixa": body.de_caixa, "valor_cent": body.valor_cent, "em": em,
     }
 
 
-def _transferencia_aberta(c, transferencia_id: int, u: dict, so_recebedor: bool) -> dict:
+def _transferencia(c, transferencia_id: int) -> tuple[dict, int | None, int | None]:
+    """A linha e os seus dois lados (quem guarda a caixa actua pela caixa)."""
     t = c.execute("SELECT * FROM transferencias WHERE id = ?", (transferencia_id,)).fetchone()
     if not t:
         raise HTTPException(404, "Pagamento não existe.")
-    partes = (t["recebedor_id"],) if so_recebedor else (t["pagador_id"], t["recebedor_id"])
-    if u["id"] not in partes:
-        raise HTTPException(403, "Esse pagamento não é contigo.")
+    responsavel = _responsavel(c)
+    paga, recebe = _lados(t, responsavel["id"] if responsavel else None)
+    return dict(t), paga, recebe
+
+
+def _exige_aberta(t: dict) -> None:
     if t["confirmada_em"] or t["anulada_em"]:
         raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
-    return dict(t)
 
 
 @app.post("/api/transferencias/{transferencia_id}/confirmar")
 def confirmar_transferencia(transferencia_id: int, u: dict = Depends(utilizador_actual)):
-    """Só quem recebeu confirma. Confirmado fica imutável."""
+    """Só o lado de quem recebe confirma."""
     with db.conn() as c:
-        _transferencia_aberta(c, transferencia_id, u, so_recebedor=True)
+        t, _, recebe = _transferencia(c, transferencia_id)
+        if u["id"] != recebe:
+            raise HTTPException(403, "Esse pagamento não é contigo.")
+        _exige_aberta(t)
         cur = c.execute(
             "UPDATE transferencias SET confirmada_em = ? "
             "WHERE id = ? AND confirmada_em IS NULL AND anulada_em IS NULL",
@@ -737,16 +879,20 @@ def confirmar_transferencia(transferencia_id: int, u: dict = Depends(utilizador_
         )
         if cur.rowcount != 1:
             raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
+        db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", False, True, u["id"])
     return {"ok": True}
 
 
 @app.post("/api/transferencias/{transferencia_id}/anular")
 def anular_transferencia(transferencia_id: int, background_tasks: BackgroundTasks,
                          u: dict = Depends(utilizador_actual)):
-    """O pagador anula um engano; o recebedor diz "Não recebi". Avisa-se só a
-    outra parte."""
+    """O lado de quem paga anula um engano; o de quem recebe diz "Não
+    recebi". Avisa-se só o outro lado."""
     with db.conn() as c:
-        t = _transferencia_aberta(c, transferencia_id, u, so_recebedor=False)
+        t, paga, recebe = _transferencia(c, transferencia_id)
+        if u["id"] not in (paga, recebe):
+            raise HTTPException(403, "Esse pagamento não é contigo.")
+        _exige_aberta(t)
         cur = c.execute(
             "UPDATE transferencias SET anulada_em = ?, anulada_por = ? "
             "WHERE id = ? AND confirmada_em IS NULL AND anulada_em IS NULL",
@@ -754,31 +900,151 @@ def anular_transferencia(transferencia_id: int, background_tasks: BackgroundTask
         )
         if cur.rowcount != 1:
             raise HTTPException(409, "Esse pagamento já foi confirmado ou anulado.")
+        db.regista_alteracao(c, "transferencia", transferencia_id, "anulada", False, True, u["id"])
     valor = _euros(t["valor_cent"])
-    if u["id"] == t["pagador_id"]:
-        _avisar_so(background_tasks, "pagamento", f"{u['nome']} anulou o pagamento de {valor} €", t["recebedor_id"])
+    if u["id"] == paga:
+        _avisar_lado(background_tasks, f"{u['nome']} anulou o pagamento de {valor} €", recebe, u["id"])
     else:
-        _avisar_so(background_tasks, "pagamento", f"{u['nome']} disse que não recebeu os {valor} €", t["pagador_id"])
+        _avisar_lado(background_tasks, f"{u['nome']} disse que não recebeu os {valor} €", paga, u["id"])
     return {"ok": True}
+
+
+class AlteracaoTransferencia(BaseModel):
+    """Qualquer subconjunto; `recebedor_id: null` explícito é diferente de
+    omitido (passar para a caixa), por isso lê-se model_fields_set."""
+    valor_cent: int = Field(default=None, ge=1, le=100_000)
+    recebedor_id: int | None = None
+    para_caixa: bool = Field(default=None)
+
+
+@app.patch("/api/transferencias/{transferencia_id}")
+def alterar_transferencia(transferencia_id: int, body: AlteracaoTransferencia, background_tasks: BackgroundTasks,
+                          u: dict = Depends(utilizador_actual)):
+    """O lado de quem paga muda o valor e/ou o destino enquanto o pagamento
+    está activo. Um pagamento confirmado volta a por confirmar; se no fim
+    quem paga e quem recebe são a mesma pessoa, fica confirmado."""
+    enviados = body.model_fields_set
+    with db.conn() as c:
+        t, paga, recebe_antes = _transferencia(c, transferencia_id)
+        if u["id"] != paga:
+            raise HTTPException(403, "Só quem pagou altera o pagamento.")
+        if t["anulada_em"]:
+            raise HTTPException(409, "Esse pagamento foi anulado.")
+        novo = {
+            "valor_cent": body.valor_cent if "valor_cent" in enviados else t["valor_cent"],
+            "recebedor_id": body.recebedor_id if "recebedor_id" in enviados else t["recebedor_id"],
+            "para_caixa": body.para_caixa if "para_caixa" in enviados else bool(t["para_caixa"]),
+        }
+        _destino_valido(t["pagador_id"], novo["recebedor_id"], novo["para_caixa"], bool(t["de_caixa"]))
+        responsavel = _responsavel(c)
+        if novo["para_caixa"] and not t["para_caixa"] and responsavel is None:
+            raise HTTPException(409, SEM_RESPONSAVEL)
+        if novo["recebedor_id"] is not None and novo["recebedor_id"] != t["recebedor_id"]:
+            _existe_utilizador(c, novo["recebedor_id"])
+        antes = {"valor_cent": t["valor_cent"], "recebedor_id": t["recebedor_id"],
+                 "para_caixa": bool(t["para_caixa"])}
+        mudou = [campo for campo in CAMPOS_EDITAVEIS_TRANSFERENCIA if novo[campo] != antes[campo]]
+        if not mudou:
+            raise HTTPException(400, "Nada mudou.")
+        for campo in mudou:
+            db.regista_alteracao(c, "transferencia", transferencia_id, campo, antes[campo], novo[campo], u["id"])
+        _, recebe = _lados({**t, **novo}, responsavel["id"] if responsavel else None)
+        confirmada_em = t["confirmada_em"]
+        if paga == recebe:
+            if not confirmada_em:
+                confirmada_em = logic.agora().isoformat()
+                db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", False, True, u["id"])
+        elif confirmada_em:
+            confirmada_em = None
+            db.regista_alteracao(c, "transferencia", transferencia_id, "confirmada", True, False, u["id"])
+        c.execute(
+            "UPDATE transferencias SET valor_cent = ?, recebedor_id = ?, para_caixa = ?, confirmada_em = ? "
+            "WHERE id = ?",
+            (novo["valor_cent"], novo["recebedor_id"], novo["para_caixa"], confirmada_em, transferencia_id),
+        )
+    corpo = f"{u['nome']} alterou um pagamento: {_euros(t['valor_cent'])} € → {_euros(novo['valor_cent'])} €"
+    for destinatario in dict.fromkeys((recebe, recebe_antes)):
+        _avisar_lado(background_tasks, corpo, destinatario, u["id"])
+    return {"ok": True}
+
+
+@app.get("/api/transferencias")
+def lista_transferencias(u: dict = Depends(utilizador_actual)):
+    """Os pagamentos de toda a gente, mais recentes primeiro, com o que quem
+    pede pode fazer a cada um."""
+    with db.conn() as c:
+        responsavel = _responsavel(c)
+        responsavel_id = responsavel["id"] if responsavel else None
+        editadas = _editadas(c, "transferencia", CAMPOS_EDITAVEIS_TRANSFERENCIA)
+        rows = c.execute(
+            "SELECT t.*, COALESCE(p.nome, 'Caixa') AS pagador, COALESCE(r.nome, 'Caixa') AS recebedor "
+            "FROM transferencias t "
+            "LEFT JOIN utilizadores p ON p.id = t.pagador_id "
+            "LEFT JOIN utilizadores r ON r.id = t.recebedor_id "
+            "ORDER BY t.em DESC, t.id DESC LIMIT 200"
+        ).fetchall()
+    lista = []
+    for t in rows:
+        paga, recebe = _lados(t, responsavel_id)
+        activa = t["anulada_em"] is None
+        aberta = activa and t["confirmada_em"] is None
+        lista.append({
+            "id": t["id"], "pagador_id": t["pagador_id"], "pagador": t["pagador"],
+            "recebedor_id": t["recebedor_id"], "recebedor": t["recebedor"],
+            "para_caixa": bool(t["para_caixa"]), "de_caixa": bool(t["de_caixa"]),
+            "valor_cent": t["valor_cent"], "em": t["em"], "confirmada_em": t["confirmada_em"],
+            "anulada_em": t["anulada_em"], "anulada_por": t["anulada_por"],
+            "editada": t["id"] in editadas,
+            "pode_editar": activa and u["id"] == paga,
+            "pode_confirmar": aberta and u["id"] == recebe,
+            "pode_anular": aberta and u["id"] in (paga, recebe),
+        })
+    return {"transferencias": lista}
+
+
+@app.get("/api/historico-alteracoes")
+def historico_alteracoes(entidade: str = Query(pattern="^(transferencia|compra|config|cafe)$"),
+                         entidade_id: int | None = Query(default=None, alias="id"),
+                         u: dict = Depends(utilizador_actual)):
+    """O rasto de uma linha (ou das Definições), mais antigas primeiro."""
+    if entidade != "config" and entidade_id is None:
+        raise HTTPException(422, "Falta o id.")
+    with db.conn() as c:
+        rows = c.execute(
+            "SELECT h.campo, h.antes, h.depois, u.nome AS utilizador, h.em FROM historico_alteracoes h "
+            "LEFT JOIN utilizadores u ON u.id = h.utilizador_id "
+            "WHERE h.entidade = ? AND h.entidade_id IS ? ORDER BY h.em, h.id",
+            (entidade, None if entidade == "config" else entidade_id),
+        ).fetchall()
+    return {"alteracoes": [dict(r) for r in rows]}
 
 
 @app.get("/api/movimentos")
 def movimentos(u: dict = Depends(utilizador_actual)):
-    """Os meus movimentos em dinheiro, do mais recente para o mais antigo."""
+    """Os meus movimentos em dinheiro, do mais recente para o mais antigo. Os
+    pagamentos à caixa que guardo são da caixa, não meus."""
     with db.conn() as c:
         saldo = _saldo(c, u["id"])
-        transferencias = [dict(r) for r in c.execute(
-            "SELECT t.id, CASE WHEN t.pagador_id = :eu THEN 'paguei' ELSE 'recebi' END AS sentido, "
-            "o.id AS outro_id, o.nome AS outro, t.valor_cent, t.em, t.confirmada_em, t.anulada_em, "
-            "t.anulada_por FROM transferencias t "
-            "JOIN utilizadores o ON o.id = CASE WHEN t.pagador_id = :eu THEN t.recebedor_id ELSE t.pagador_id END "
-            "WHERE t.pagador_id = :eu OR t.recebedor_id = :eu ORDER BY t.em DESC, t.id DESC",
-            {"eu": u["id"]},
-        ).fetchall()]
-        compras = [
-            {**dict(r), "custo_estimado": bool(r["custo_estimado"])}
+        editadas = _editadas(c, "transferencia", CAMPOS_EDITAVEIS_TRANSFERENCIA)
+        transferencias = [
+            {**dict(r), "para_caixa": bool(r["para_caixa"]), "de_caixa": bool(r["de_caixa"]),
+             "editada": r["id"] in editadas}
             for r in c.execute(
-                "SELECT id, capsulas, custo_cent, custo_estimado, em FROM compras "
+                "SELECT t.id, CASE WHEN t.pagador_id = :eu THEN 'paguei' ELSE 'recebi' END AS sentido, "
+                "o.id AS outro_id, COALESCE(o.nome, 'Caixa') AS outro, t.valor_cent, t.em, t.confirmada_em, "
+                "t.anulada_em, t.anulada_por, t.para_caixa, t.de_caixa FROM transferencias t "
+                "LEFT JOIN utilizadores o "
+                "ON o.id = CASE WHEN t.pagador_id = :eu THEN t.recebedor_id ELSE t.pagador_id END "
+                "WHERE t.pagador_id = :eu OR t.recebedor_id = :eu ORDER BY t.em DESC, t.id DESC",
+                {"eu": u["id"]},
+            ).fetchall()
+        ]
+        compras_editadas = _editadas(c, "compra")
+        compras = [
+            {**dict(r), "custo_estimado": bool(r["custo_estimado"]),
+             "paga_pela_caixa": bool(r["paga_pela_caixa"]), "editada": r["id"] in compras_editadas}
+            for r in c.execute(
+                "SELECT id, capsulas, custo_cent, custo_estimado, paga_pela_caixa, em FROM compras "
                 "WHERE utilizador_id = ? ORDER BY em DESC, id DESC",
                 (u["id"],),
             ).fetchall()
@@ -792,14 +1058,46 @@ def movimentos(u: dict = Depends(utilizador_actual)):
 
 
 class Config(BaseModel):
-    stock_baixo: int | None = Field(default=None, ge=0, le=10_000)
+    """Qualquer subconjunto. `caixa_responsavel_id: null` tira o responsável,
+    por isso lê-se model_fields_set. O preço nunca é 0: a migração repara os
+    cafés gravados a 0 em cada arranque."""
+    preco_cent: int = Field(default=None, ge=1, le=10_000)
+    stock_baixo: int = Field(default=None, ge=0, le=10_000)
+    caixa_responsavel_id: int | None = None
+
+
+def _config(c) -> dict:
+    responsavel = c.execute("SELECT valor FROM config WHERE chave = 'caixa_responsavel_id'").fetchone()
+    return {
+        "preco_cent": _preco(c),
+        "stock_baixo": int(db.get_config(c, "stock_baixo")),
+        "caixa_responsavel_id": int(responsavel["valor"]) if responsavel else None,
+    }
+
+
+@app.get("/api/config")
+def obter_config(u: dict = Depends(utilizador_actual)):
+    with db.conn() as c:
+        return {**_config(c), "editada": bool(_editadas(c, "config"))}
 
 
 @app.put("/api/config")
 def alterar_config(body: Config, u: dict = Depends(utilizador_actual)):
+    """Qualquer pessoa. Cada chave que muda de valor fica no histórico."""
+    enviados = body.model_fields_set
     with db.conn() as c:
-        if body.stock_baixo is not None:
-            db.set_config(c, "stock_baixo", str(body.stock_baixo))
+        if body.caixa_responsavel_id is not None:
+            _existe_utilizador(c, body.caixa_responsavel_id)
+        antes = _config(c)
+        for chave in ("preco_cent", "stock_baixo", "caixa_responsavel_id"):
+            novo = getattr(body, chave)
+            if chave not in enviados or novo == antes[chave]:
+                continue
+            if novo is None:
+                c.execute("DELETE FROM config WHERE chave = ?", (chave,))
+            else:
+                db.set_config(c, chave, str(novo))
+            db.regista_alteracao(c, "config", None, chave, antes[chave], novo, u["id"])
     return {"ok": True}
 
 

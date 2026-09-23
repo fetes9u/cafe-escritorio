@@ -127,16 +127,19 @@ def test_apagar_compra_so_quem_registou_e_sem_stock_negativo(cliente):
     assert a.get("/api/eu").json()["stock"]["stock"] == 0
 
 
-def test_config_muda_o_limiar_e_ignora_o_preco(cliente):
-    """O preço deixou de se editar: um formulário antigo em cache ainda manda
-    os dois campos, e o limiar tem de ficar gravado na mesma."""
+def test_config_muda_o_preco_e_o_limiar_sem_mexer_nos_cafes_gravados(cliente):
     a = regista(cliente, "Ana")
+    a.post("/api/cafe")
     assert a.put("/api/config", json={"preco_cent": 30, "stock_baixo": 5}).status_code == 200
-    with db.conn() as c:
-        assert db.get_config(c, "preco_cent") == "25"
     a.post("/api/cafe")
     eu = a.get("/api/eu").json()
-    assert eu["preco_cent"] == 25 and eu["valor_cent"] == 25 and eu["stock"]["limiar"] == 5
+    assert eu["preco_cent"] == 30 and eu["valor_cent"] == 25 + 30 and eu["stock"]["limiar"] == 5
+    assert a.get("/api/config").json() == {
+        "preco_cent": 30, "stock_baixo": 5, "caixa_responsavel_id": None, "editada": True,
+    }
+    # o preço nunca é 0: a migração repara os cafés a 0 em cada arranque
+    assert a.put("/api/config", json={"preco_cent": 0}).status_code == 422
+    assert a.get("/api/eu").json()["preco_cent"] == 30
 
 
 # ---------- escritório ----------
@@ -188,27 +191,31 @@ def test_desfazer_cafe_num_mes_com_pagamentos_ja_nao_da_409(cliente, relogio):
     assert linha["Bea"]["cafes"] == 0 and linha["Bea"]["valor_cent"] == 0
 
 
-def test_preco_gravado_no_cafe_nao_muda_com_compras_seguintes(cliente, relogio):
-    """O preço é o do momento em que o café foi gravado: uma caixa mais cara
-    depois não re-precifica os cafés antigos."""
+def test_preco_e_fixo_e_fica_gravado_no_cafe(cliente, relogio):
+    """Uma caixa mais cara não muda o preço; mudar o preço nas Definições
+    não re-precifica os cafés já gravados."""
     a, _ = _mes_com_cafes(cliente, relogio)
     a.post("/api/compras", json={"capsulas": 10, "custo_cent": 600})
+    assert a.get("/api/escritorio").json()["preco_cent"] == 25
+    a.put("/api/config", json={"preco_cent": 31})
     e = a.get("/api/escritorio", params={"mes": "2026-08"}).json()
     linha = {p["nome"]: p for p in e["pessoas"]}
     assert linha["Ana"]["valor_cent"] == 75 and linha["Bea"]["valor_cent"] == 25
-    # 45 + 10 cápsulas, 1250 + 600 - 5 × 25 por recuperar: 1725 / 55 = 31,4
     assert e["preco_cent"] == 31
     a.post("/api/cafe")
     assert a.get("/api/eu").json()["valor_cent"] == 25 + 31
 
 
-def test_escritorio_tem_pote_saldos_e_custos(cliente, relogio):
+def test_escritorio_tem_caixa_saldos_e_custos(cliente, relogio):
     a, b = _mes_com_cafes(cliente, relogio)
     e = b.get("/api/escritorio").json()
-    assert e["pote"] == {"valor_cent": 1250 - 5 * 25, "capsulas": 45}
+    assert "pote" not in e
+    assert e["caixa"] == {"responsavel_id": None, "responsavel": None, "dinheiro_cent": 0,
+                          "por_receber_cent": 25, "fundo_cent": 5 * 25 - 1250}
     assert {p["nome"]: p["saldo_cent"] for p in e["pessoas"]} == {"Ana": 1250 - 4 * 25, "Bea": -25}
     compra = e["compras"][0]
     assert compra["custo_cent"] == 1250 and compra["custo_estimado"] is False
+    assert compra["paga_pela_caixa"] is False and compra["editada"] is False
     assert compra["pode_editar"] is False  # foi a Ana que registou; quem pergunta é a Bea
     assert a.get("/api/escritorio").json()["compras"][0]["pode_editar"] is True
     assert "pago" not in e["pessoas"][0] and "pagamento" not in e["pessoas"][0]
@@ -288,7 +295,7 @@ def test_corrida_entre_select_e_insert_do_cliente_id_devolve_duplicado(cliente, 
     SELECT que a deteção de duplicado faz e o INSERT que grava: uma ligação
     instável que retransmite um café cujo primeiro pedido ainda está em voo é
     exactamente o caso que a idempotência existe para cobrir. Isto força a
-    corrida de forma determinística ao fazer _preco_corrente (chamada depois
+    corrida de forma determinística ao fazer _preco (chamada depois
     do SELECT e antes do INSERT) inserir a linha concorrente a meio, para que
     o INSERT de marcar_cafe perca a corrida e tenha de recuperar em vez de
     devolver 500."""
@@ -296,11 +303,11 @@ def test_corrida_entre_select_e_insert_do_cliente_id_devolve_duplicado(cliente, 
     ana_id = cliente.get("/api/utilizadores").json()[0]["id"]
     cliente_id = "corrida-1"
 
-    original = app_main._preco_corrente
+    original = app_main._preco
     inserida = {"feito": False}
 
-    def _preco_que_insere_a_meio(c, *args):
-        preco = original(c, *args)
+    def _preco_que_insere_a_meio(c):
+        preco = original(c)
         if not inserida["feito"]:
             inserida["feito"] = True
             # simula outra ligação a ganhar a corrida e a inserir primeiro
@@ -311,7 +318,7 @@ def test_corrida_entre_select_e_insert_do_cliente_id_devolve_duplicado(cliente, 
             )
         return preco
 
-    monkeypatch.setattr(app_main, "_preco_corrente", _preco_que_insere_a_meio)
+    monkeypatch.setattr(app_main, "_preco", _preco_que_insere_a_meio)
     r = a.post("/api/cafe", json={"cliente_id": cliente_id})
 
     assert r.status_code == 200, r.text

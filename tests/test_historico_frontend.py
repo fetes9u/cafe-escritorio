@@ -197,6 +197,52 @@ def test_dinheiro_lista_sends_the_right_verb_for_each_action():
 
 # ---------- service worker ----------
 
-def test_cache_version_is_v7():
+def test_cache_version_is_v8():
     text = (STATIC / "sw.js").read_text(encoding="utf-8")
-    assert 'CACHE_VERSION = "v7"' in text
+    assert 'CACHE_VERSION = "v8"' in text
+
+
+# ---------- caixa: preco/simular is gone, the new sections exist ----------
+
+def test_no_preco_simular_call_is_left_anywhere_in_the_client():
+    """The average-price preview (and its endpoint) is removed by the caixa
+    spec (section 4.9: `GET /api/preco/simular` sai, 404); nothing in the
+    client may still reference it."""
+    js = _app_js()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "preco/simular" not in js
+    assert "compra-preview" not in js
+    assert "compra-preview" not in html
+
+
+def test_destination_change_pairs_para_caixa_with_recebedor_id_into_one_line():
+    """A pagamento's destination moving between Caixa and a person writes two
+    historico_alteracoes rows (campo para_caixa and campo recebedor_id) from
+    the same PATCH. The server computes the request's instant once and
+    passes it to every regista_alteracao() call of that request, so both
+    rows share the exact same em; the client pairs them on em + utilizador
+    equality, order-independent (no reliance on adjacency or write order).
+    The expander must pair them into a single line before rendering."""
+    js = _app_js()
+    assert "function juntarAlteracoesDestino(" in js
+    inicio = js.index("function juntarAlteracoesDestino(")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    assert '"para_caixa"' in corpo
+    assert '"recebedor_id"' in corpo
+    assert "a.em" in corpo and "a.utilizador" in corpo
+    assert "alteracoes[i - 1]" not in corpo
+    assert "slice(0, 16)" not in corpo
+    inicio = js.index("async function expandirHistorico(")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    assert "juntarAlteracoesDestino(" in corpo
+
+
+def test_index_has_the_new_caixa_sections_with_their_ids():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for id_ in (
+        "caixa-contigo", "esc-caixa", "pagamentos-secao", "pagamentos-lista",
+        "compra-paga-com", "cfg-preco", "cfg-caixa-responsavel", "cfg-ver-alteracoes",
+        "cfg-historico-lista",
+    ):
+        assert f'id="{id_}"' in html, f"missing #{id_}"
+    assert 'id="esc-pote"' not in html, "esc-pote was replaced by esc-caixa (spec 4.8: sai pote, entra caixa)"

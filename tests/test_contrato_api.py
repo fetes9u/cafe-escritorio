@@ -409,14 +409,16 @@ def test_o_mesmo_cliente_id_duas_vezes_da_um_cafe_so_e_a_segunda_diz_duplicado(c
     )
 
 
-# ---------- saldos e pagamentos MB WAY: the join between the two halves ----------
+# ---------- caixa, preço fixo e histórico de alterações: the join between the two halves ----------
 #
-# See docs/superpowers/specs/2026-09-23-saldos-e-pagamentos-mbway-design.md
-# section 4 for the field-level API contract. The server lane and the client
-# lane implemented their halves in parallel worktrees against that contract;
-# nothing below retypes a field name, a route or a literal by hand, so
-# changing either side without changing the other is what breaks these
-# tests, exactly like every other test in this file.
+# See docs/superpowers/specs/2026-09-23-caixa-e-historico-design.md section 4
+# for the field-level API contract (it supersedes
+# 2026-09-23-saldos-e-pagamentos-mbway-design.md where the two diverge, per
+# its own section 1). The server lane and the client lane implemented their
+# halves in parallel worktrees against that contract; nothing below retypes a
+# field name, a route or a literal by hand, so changing either side without
+# changing the other is what breaks these tests, exactly like every other
+# test in this file.
 
 def _texto_app_js() -> str:
     """Full source of app/static/app.js, read directly so every field name
@@ -425,7 +427,7 @@ def _texto_app_js() -> str:
     return (STATIC / "app.js").read_text(encoding="utf-8")
 
 
-# ---- GET /api/eu: saldo_cent, sugestao and por_confirmar (spec 4.1) ----
+# ---- GET /api/eu: saldo_cent, caixa, sugestao and por_confirmar (spec 4.1) ----
 
 def _campo_saldo_de_eu() -> str:
     m = re.search(r"fraseSaldo\(eu\.(\w+)\)", _texto_app_js())
@@ -434,7 +436,7 @@ def _campo_saldo_de_eu() -> str:
 
 
 def _campo_sugestao_de_eu() -> str:
-    m = re.search(r'if \(eu\.(\w+)\) \{\s*\n\s*\$\("saldo-sugestao"\)', _texto_app_js())
+    m = re.search(r"if \(eu\.(\w+)\) \{", _texto_app_js())
     assert m, "could not find the `if (eu.<campo>)` guard around #saldo-sugestao in app.js"
     return m.group(1)
 
@@ -451,6 +453,15 @@ def _subcampos_da_sugestao() -> set[str]:
     return campos
 
 
+def _campos_de_caixa_em_eu() -> set[str]:
+    """The field names app.js reads off `eu.caixa` (the keeper line on the
+    Café card and the payment form's default destination), extracted instead
+    of retyped, per spec 4.1."""
+    campos = set(re.findall(r"eu\.caixa\.(\w+)", _texto_app_js()))
+    assert campos, "could not find any `eu.caixa.<campo>` read in app.js"
+    return campos
+
+
 def _subcampos_do_item_por_confirmar() -> set[str]:
     m = re.search(r"for \(const t of pc\) \{(.*?)\n    \}", _texto_app_js(), re.S)
     assert m, "could not find the `for (const t of pc)` loop in desenharEu in app.js"
@@ -459,64 +470,74 @@ def _subcampos_do_item_por_confirmar() -> set[str]:
     return campos
 
 
-def test_os_campos_de_saldo_sugestao_e_por_confirmar_de_eu_batem_com_a_resposta_real(cliente):
-    """Builds a real state where a debtor gets a payment suggestion (a credor
-    with a positive balance exists) and has a pending incoming payment
-    (someone paid them, unconfirmed) in the very same GET /api/eu response,
-    so neither check below is vacuous. Ana buys capsules (credit), Bruno
-    drinks a coffee (debt), Carla pays Bruno (a pending, unconfirmed
-    transfer): Bruno's own response then carries both a non-null sugestao
-    and a non-empty por_confirmar."""
+def test_os_campos_de_saldo_caixa_sugestao_e_por_confirmar_de_eu_batem_com_a_resposta_real(cliente):
+    """Builds a real state with a keeper (Ana, set through PUT /api/config so
+    caixa and the sugestao path are both live), a debtor with no offsetting
+    payment (Bruno: sugestao must not be null) and an unconfirmed payment to
+    the caixa (Carla pays the caixa: Ana's, the keeper's, por_confirmar must
+    not be empty), so none of the checks below is vacuous."""
     ana = regista(cliente, "Ana")
     bruno = regista(cliente, "Bruno")
     carla = regista(cliente, "Carla")
     ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
-    bruno_id = bruno.get("/api/eu").json()["utilizador"]["id"]
 
-    r = ana.post("/api/compras", json={"capsulas": 100, "custo_cent": 2500, "nota": None})
-    assert r.status_code == 201, r.text
+    r = ana.put("/api/config", json={"caixa_responsavel_id": ana_id})
+    assert r.status_code == 200, r.text
+
     r = bruno.post("/api/cafe", json={})
     assert r.status_code == 201, r.text
-    r = carla.post("/api/transferencias", json={"recebedor_id": bruno_id, "valor_cent": 500})
+    r = carla.post("/api/transferencias", json={"recebedor_id": None, "para_caixa": True, "valor_cent": 400})
     assert r.status_code == 201, r.text
 
-    resp = bruno.get("/api/eu").json()
+    resp_bruno = bruno.get("/api/eu").json()
+    resp_ana = ana.get("/api/eu").json()
 
     campo_saldo = _campo_saldo_de_eu()
-    assert campo_saldo in resp, (
-        f"app.js reads `eu.{campo_saldo}`, but GET /api/eu has no such field: {sorted(resp)}"
+    assert campo_saldo in resp_bruno, (
+        f"app.js reads `eu.{campo_saldo}`, but GET /api/eu has no such field: {sorted(resp_bruno)}"
     )
-    assert resp[campo_saldo] == -525, (
-        f"Bruno drank a 25 cent coffee and received a 500 cent payment, so his saldo_cent "
-        f"should be -525, got {resp[campo_saldo]}"
+    assert resp_bruno[campo_saldo] == -25, (
+        f"Bruno drank a 25 cent coffee and made no payment, so his saldo_cent should be "
+        f"-25, got {resp_bruno[campo_saldo]}"
+    )
+
+    for campo in _campos_de_caixa_em_eu():
+        assert campo in resp_bruno["caixa"], (
+            f"app.js reads `eu.caixa.{campo}`, but the response's caixa has no such field: "
+            f"{sorted(resp_bruno['caixa'])}"
+        )
+    assert resp_bruno["caixa"]["responsavel_id"] == ana_id
+    assert resp_bruno["caixa"]["responsavel"] == "Ana"
+    assert resp_bruno["caixa"]["dinheiro_cent"] == 400, (
+        "Carla's 400 cent payment to the caixa counts even unconfirmed (spec 3.1: only "
+        f"anulada_em matters), so caixa.dinheiro_cent should be 400, got "
+        f"{resp_bruno['caixa']['dinheiro_cent']}"
     )
 
     campo_sugestao = _campo_sugestao_de_eu()
-    assert campo_sugestao in resp, (
-        f"app.js reads `eu.{campo_sugestao}`, but GET /api/eu has no such field: {sorted(resp)}"
+    assert campo_sugestao in resp_bruno, (
+        f"app.js reads `eu.{campo_sugestao}`, but GET /api/eu has no such field: {sorted(resp_bruno)}"
     )
-    sugestao = resp[campo_sugestao]
+    sugestao = resp_bruno[campo_sugestao]
     assert sugestao is not None, (
-        "Bruno owes money and Ana has a positive balance, so sugestao must not be null "
-        "here; otherwise the check below is vacuous"
+        "Bruno owes money and a keeper is set, so sugestao must not be null here; "
+        "otherwise the check below is vacuous"
     )
     for subcampo in _subcampos_da_sugestao():
         assert subcampo in sugestao, (
             f"app.js reads `eu.sugestao.{subcampo}`, but the response's sugestao has no "
             f"such field: {sorted(sugestao)}"
         )
-    assert sugestao["utilizador_id"] == ana_id
-    assert sugestao["nome"] == "Ana"
-    assert sugestao["valor_cent"] == 525
+    assert sugestao["valor_cent"] == 25
 
     campo_pc = _campo_por_confirmar_de_eu()
-    assert campo_pc in resp, (
-        f"app.js reads `eu.{campo_pc}`, but GET /api/eu has no such field: {sorted(resp)}"
+    assert campo_pc in resp_ana, (
+        f"app.js reads `eu.{campo_pc}`, but GET /api/eu has no such field: {sorted(resp_ana)}"
     )
-    por_confirmar = resp[campo_pc]
+    por_confirmar = resp_ana[campo_pc]
     assert por_confirmar, (
-        "Carla just paid Bruno and the payment is unconfirmed, so por_confirmar must not "
-        "be empty here; otherwise the check below is vacuous"
+        "Carla just paid the caixa and Ana guards it, so her por_confirmar must not be "
+        "empty here; otherwise the check below is vacuous"
     )
     item = por_confirmar[0]
     for subcampo in _subcampos_do_item_por_confirmar():
@@ -525,7 +546,9 @@ def test_os_campos_de_saldo_sugestao_e_por_confirmar_de_eu_batem_com_a_resposta_
             f"item has no such field: {sorted(item)}"
         )
     assert item["pagador"] == "Carla"
-    assert item["valor_cent"] == 500
+    assert item["valor_cent"] == 400
+    assert item["para_caixa"] is True
+
 
 
 # ---- GET /api/movimentos: transferencias, compras and meses items (spec 4.5) ----
@@ -643,7 +666,7 @@ def test_os_campos_de_movimentos_batem_com_a_resposta_real(cliente):
     assert item_mes["valor_cent"] == 25
 
 
-# ---- GET /api/escritorio: pote, pessoas and compras (spec 4.6) ----
+# ---- GET /api/escritorio: caixa, pessoas and compras (spec 4.8) ----
 
 def _corpo_desenhar_escritorio() -> str:
     m = re.search(r"function desenharEscritorio\(\) \{(.*?)\n\}\n", _texto_app_js(), re.S)
@@ -651,9 +674,9 @@ def _corpo_desenhar_escritorio() -> str:
     return m.group(1)
 
 
-def _campos_do_pote() -> set[str]:
-    campos = set(re.findall(r"e\.pote\.(\w+)", _corpo_desenhar_escritorio()))
-    assert campos, "could not find any `e.pote.<campo>` read in desenharEscritorio"
+def _campos_de_caixa_no_escritorio() -> set[str]:
+    campos = set(re.findall(r"e\.caixa\.(\w+)", _corpo_desenhar_escritorio()))
+    assert campos, "could not find any `e.caixa.<campo>` read in desenharEscritorio"
     return campos
 
 
@@ -670,23 +693,39 @@ def _campos_de_compra_no_escritorio() -> set[str]:
 
 
 def test_os_campos_de_escritorio_batem_com_a_resposta_real(cliente):
+    """Spec 4.8: pote is gone, replaced by caixa. Ana guards the caixa and
+    buys capsules paid by it (so caixa.dinheiro_cent moves), Bruno drinks a
+    coffee unpaid (so caixa.por_receber_cent is non-zero)."""
     ana = regista(cliente, "Ana")
     bruno = regista(cliente, "Bruno")
+    ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
 
-    r = ana.post("/api/compras", json={"capsulas": 100, "custo_cent": 2500, "nota": None})
+    r = ana.put("/api/config", json={"caixa_responsavel_id": ana_id})
+    assert r.status_code == 200, r.text
+    r = ana.post("/api/compras", json={"capsulas": 100, "custo_cent": 2500, "paga_pela_caixa": True, "nota": None})
     assert r.status_code == 201, r.text
     r = bruno.post("/api/cafe", json={})
     assert r.status_code == 201, r.text
 
     esc = ana.get("/api/escritorio").json()
+    assert "pote" not in esc, "spec 4.8: pote sai, entra caixa"
 
-    for campo in _campos_do_pote():
-        assert campo in esc["pote"], (
-            f"app.js reads `e.pote.{campo}`, but GET /api/escritorio's pote has no such "
-            f"field: {sorted(esc['pote'])}"
+    for campo in _campos_de_caixa_no_escritorio():
+        assert campo in esc["caixa"], (
+            f"app.js reads `e.caixa.{campo}`, but GET /api/escritorio's caixa has no such "
+            f"field: {sorted(esc['caixa'])}"
         )
-    assert esc["pote"]["valor_cent"] == 2475  # 2500 bought minus the 25 cent coffee already drunk
-    assert esc["pote"]["capsulas"] == 99
+    assert esc["caixa"]["responsavel_id"] == ana_id
+    assert esc["caixa"]["responsavel"] == "Ana"
+    assert esc["caixa"]["dinheiro_cent"] == -2500, (
+        "the caixa paid 2500 cents for the capsules and nothing has been recovered yet, so "
+        f"caixa.dinheiro_cent should be -2500, got {esc['caixa']['dinheiro_cent']}"
+    )
+    assert esc["caixa"]["por_receber_cent"] == 25, (
+        f"Bruno's 25 cent coffee is unpaid, so caixa.por_receber_cent should be 25, got "
+        f"{esc['caixa']['por_receber_cent']}"
+    )
+    assert esc["caixa"]["fundo_cent"] == 25 - 2500
 
     pessoa_ana = next(p for p in esc["pessoas"] if p["nome"] == "Ana")
     for campo in _campos_de_pessoa_no_escritorio():
@@ -694,7 +733,7 @@ def test_os_campos_de_escritorio_batem_com_a_resposta_real(cliente):
             f"app.js reads `p.{campo}` off a pessoa in Escritório, but the response's "
             f"pessoa has no such field: {sorted(pessoa_ana)}"
         )
-    assert pessoa_ana["saldo_cent"] == 2500
+    assert pessoa_ana["saldo_cent"] == 0  # she bought capsules through the caixa, not her own pocket
 
     compra = esc["compras"][0]
     for campo in _campos_de_compra_no_escritorio():
@@ -703,16 +742,46 @@ def test_os_campos_de_escritorio_batem_com_a_resposta_real(cliente):
             f"compra has no such field: {sorted(compra)}"
         )
     assert compra["custo_cent"] == 2500
+    assert compra["paga_pela_caixa"] is True
     assert compra["custo_estimado"] is False
     assert compra["pode_editar"] is True
+    assert compra["editada"] is False
 
 
-# ---- exact request shapes: transferencias, compras and preco/simular (spec 4.2, 4.7) ----
+# ---- exact request shapes: transferencias, compras and config (spec 4.2, 4.3, 4.9, 4.10) ----
 
-def _corpo_enviado_para_post_transferencias() -> set[str]:
-    m = re.search(r'api\("POST",\s*"/transferencias",\s*\{([^}]*)\}\)', _texto_app_js())
-    assert m, 'could not find the `api("POST", "/transferencias", {...})` call in app.js'
-    return _campos_de_objeto_js(m.group(1))
+def _corpos_enviados_para_post_transferencias() -> dict[str, set[str]]:
+    """The three literal body shapes app.js's own POST /api/transferencias
+    call sites build: paying the caixa and paying a person (both in the
+    payment form's submit handler) and a de_caixa reimbursement (the
+    Reembolsar inline form). Classified by each call site's own literal
+    para_caixa/de_caixa value, never retyped, so a renamed field or a
+    reordered/merged call site on either side is what breaks this, not a
+    hand-maintained expectation."""
+    js = _texto_app_js()
+    corpos = re.findall(r'api\("POST",\s*"/transferencias",\s*\{([^}]*)\}\)', js)
+    assert len(corpos) == 3, (
+        f"expected exactly 3 call sites for POST /api/transferencias in app.js (pay the "
+        f"caixa, pay a person, de_caixa reimbursement), found {len(corpos)}; did a call "
+        f"site get added, removed or merged? update this test if that change was intentional"
+    )
+    por_tipo: dict[str, set[str]] = {}
+    for corpo in corpos:
+        if "de_caixa: true" in corpo:
+            chave = "de_caixa"
+        elif "para_caixa: true" in corpo:
+            chave = "para_caixa"
+        elif "para_caixa: false" in corpo:
+            chave = "pessoa"
+        else:
+            raise AssertionError(f"could not classify a POST /api/transferencias call site: {corpo!r}")
+        assert chave not in por_tipo, f"two call sites both classify as {chave!r}: {corpo!r}"
+        por_tipo[chave] = _campos_de_objeto_js(corpo)
+    assert set(por_tipo) == {"de_caixa", "para_caixa", "pessoa"}, (
+        f"expected the three POST /api/transferencias call sites to cover pagar à caixa, "
+        f"pagar a uma pessoa and o reembolso de_caixa, got {sorted(por_tipo)}"
+    )
+    return por_tipo
 
 
 def _corpo_enviado_para_post_compras() -> set[str]:
@@ -721,111 +790,419 @@ def _corpo_enviado_para_post_compras() -> set[str]:
     return _campos_de_objeto_js(m.group(1))
 
 
-def _corpo_enviado_para_patch_compras() -> set[str]:
-    m = re.search(r'api\("PATCH",\s*`[^`]*`,\s*\{([^}]*)\}\)', _texto_app_js())
-    assert m, 'could not find the `api("PATCH", `/compras/...`, {...})` call in app.js'
+def _corpo_enviado_para_put_config() -> set[str]:
+    m = re.search(r'api\("PUT",\s*"/config",\s*\{([^}]*)\}\)', _texto_app_js())
+    assert m, 'could not find the `api("PUT", "/config", {...})` call in app.js'
     return _campos_de_objeto_js(m.group(1))
 
 
-def _parametros_enviados_para_preco_simular() -> set[str]:
-    m = re.search(r"`/preco/simular\?([^`]*)`", _texto_app_js())
-    assert m, "could not find the `/preco/simular?...` template literal in app.js"
-    campos = set(re.findall(r"([a-zA-Z_]\w*)=", m.group(1)))
-    assert campos, "found the /preco/simular query string but no parameter names in it"
+def _campos_enviados_no_patch_transferencias() -> set[str]:
+    """PATCH /api/transferencias/{id}'s body is never a single literal object
+    in app.js: `guardarEdicaoPagamento` builds it conditionally, field by
+    field, depending on what actually changed (spec 4.3: "qualquer
+    subconjunto"). This extracts the field names from its own
+    `corpo.<campo> = ...` assignments instead of retyping them."""
+    js = _texto_app_js()
+    m = re.search(r"async function guardarEdicaoPagamento\(.*?\n\}\n", js, re.S)
+    assert m, "could not find `async function guardarEdicaoPagamento(...) {...}` in app.js"
+    campos = set(re.findall(r"corpo\.(\w+)\s*=", m.group(0)))
+    assert campos, "could not find any `corpo.<campo> = ` assignment in guardarEdicaoPagamento"
     return campos
 
 
-def test_o_corpo_que_o_cliente_envia_ao_pagar_move_mesmo_o_saldo_dos_dois_lados(cliente):
-    """Sends exactly what app.js's payment form builds (extracted, not
-    retyped) to the real POST /api/transferencias, then proves the effect by
-    reading /api/eu back for both sides, never trusting the 201 alone."""
-    ana = regista(cliente, "Ana")
+def _campos_enviados_no_patch_compras() -> set[str]:
+    """Same reasoning as _campos_enviados_no_patch_transferencias, for
+    PATCH /api/compras/{id}'s body, built field by field in
+    `abrirEdicaoCompra`'s submit handler."""
+    js = _texto_app_js()
+    m = re.search(r"function abrirEdicaoCompra\(li, c\) \{(.*?)\n\}\n", js, re.S)
+    assert m, "could not find `function abrirEdicaoCompra(li, c) {...}` in app.js"
+    campos = set(re.findall(r"corpo\.(\w+)\s*=", m.group(1)))
+    assert campos, "could not find any `corpo.<campo> = ` assignment in abrirEdicaoCompra"
+    return campos
+
+
+def test_os_tres_corpos_que_o_cliente_envia_ao_pagar_movem_mesmo_o_dinheiro_certo(cliente):
+    """Sends exactly the three body shapes app.js's own call sites build
+    (extracted, not retyped) to the real POST /api/transferencias, then
+    proves each one's effect by reading balances/caixa back, never trusting
+    the 201 alone."""
+    ana = regista(cliente, "Ana")  # guarda a caixa
     bruno = regista(cliente, "Bruno")
+    carla = regista(cliente, "Carla")
+    ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
     bruno_id = bruno.get("/api/eu").json()["utilizador"]["id"]
 
-    campos = _corpo_enviado_para_post_transferencias()
-    valores = {"recebedor_id": bruno_id, "valor_cent": 500}
-    corpo = {campo: valores[campo] for campo in campos}
+    r = ana.put("/api/config", json={"caixa_responsavel_id": ana_id})
+    assert r.status_code == 200, r.text
 
+    corpos = _corpos_enviados_para_post_transferencias()
+
+    # 1) para a caixa
+    campos = corpos["para_caixa"]
+    valores = {"recebedor_id": None, "para_caixa": True, "de_caixa": False, "valor_cent": 500}
+    corpo = {campo: valores[campo] for campo in campos}
+    r = bruno.post("/api/transferencias", json=corpo)
+    assert r.status_code == 201, r.text
+    caixa_depois = ana.get("/api/eu").json()["caixa"]
+    assert caixa_depois["dinheiro_cent"] == 500, (
+        f"the client's own body {corpo} paid 500 cents to the caixa, dinheiro_cent should "
+        f"be +500, got {caixa_depois['dinheiro_cent']}"
+    )
+
+    # 2) a uma pessoa
+    campos = corpos["pessoa"]
+    valores = {"recebedor_id": bruno_id, "para_caixa": False, "de_caixa": False, "valor_cent": 300}
+    corpo = {campo: valores[campo] for campo in campos}
+    r = carla.post("/api/transferencias", json=corpo)
+    assert r.status_code == 201, r.text
+    carla_depois = carla.get("/api/eu").json()
+    assert carla_depois["saldo_cent"] == 300, (
+        f"the client's own body {corpo} should have moved Carla's saldo_cent to +300, got "
+        f"{carla_depois['saldo_cent']}"
+    )
+
+    # 3) reembolso de_caixa, pelo responsável
+    campos = corpos["de_caixa"]
+    valores = {"recebedor_id": bruno_id, "de_caixa": True, "para_caixa": False, "valor_cent": 100}
+    corpo = {campo: valores[campo] for campo in campos}
     r = ana.post("/api/transferencias", json=corpo)
     assert r.status_code == 201, r.text
-
-    ana_depois = ana.get("/api/eu").json()
-    bruno_depois = bruno.get("/api/eu").json()
-    assert ana_depois["saldo_cent"] == 500, (
-        f"Ana paid 500 cents with the client's own body {corpo}, her saldo_cent should be "
-        f"+500, got {ana_depois['saldo_cent']}"
-    )
-    assert bruno_depois["saldo_cent"] == -500, (
-        f"Bruno received 500 cents, his saldo_cent should be -500, got {bruno_depois['saldo_cent']}"
+    caixa_final = ana.get("/api/eu").json()["caixa"]
+    assert caixa_final["dinheiro_cent"] == 400, (
+        f"the client's own body {corpo} paid 100 cents out of the caixa, dinheiro_cent "
+        f"should drop from 500 to 400, got {caixa_final['dinheiro_cent']}"
     )
 
 
 def test_o_corpo_que_o_cliente_envia_ao_comprar_capsulas_grava_mesmo_a_compra(cliente):
     """Sends exactly what app.js's purchase form builds to the real
     POST /api/compras, then proves the effect through /api/escritorio: the
-    pot and the new entry, never the 201 alone."""
+    new entry's own fields, never the 201 alone."""
     ana = regista(cliente, "Ana")
 
     campos = _corpo_enviado_para_post_compras()
-    valores = {"capsulas": 50, "custo_cent": 1500, "nota": "compra de teste"}
+    assert campos == {"capsulas", "custo_cent", "paga_pela_caixa", "nota"}, (
+        f"app.js's purchase form sends {sorted(campos)}, expected exactly capsulas, "
+        f"custo_cent, paga_pela_caixa and nota (spec 4.9)"
+    )
+    valores = {"capsulas": 50, "custo_cent": 1500, "paga_pela_caixa": False, "nota": "compra de teste"}
     corpo = {campo: valores[campo] for campo in campos}
 
     r = ana.post("/api/compras", json=corpo)
     assert r.status_code == 201, r.text
 
-    esc = ana.get("/api/escritorio").json()
-    assert esc["pote"]["valor_cent"] == 1500, (
-        f"the client's own body {corpo} should have put 1500 cents in the pote, got "
-        f"{esc['pote']['valor_cent']}"
-    )
-    compra = esc["compras"][0]
+    compra = ana.get("/api/escritorio").json()["compras"][0]
     assert compra["capsulas"] == 50
     assert compra["custo_cent"] == 1500
+    assert compra["paga_pela_caixa"] is False
 
 
-def test_o_corpo_que_o_cliente_envia_ao_corrigir_o_custo_de_uma_compra_grava_mesmo_a_correcao(cliente):
-    """Sends exactly what app.js's "Corrigir custo" prompt builds to the real
-    PATCH /api/compras/{id}, then proves the effect by reading the entry
-    back, including that it stops being an estimate (spec 4.7)."""
+def test_o_corpo_que_o_cliente_envia_numa_oferta_grava_custo_zero_e_paga_pela_caixa_falso(cliente):
+    """A gift (Paga com: Oferta) sends the same field set as any other
+    purchase, but with custo_cent = 0; spec 4.9 says the server must force
+    paga_pela_caixa to 0 in that case regardless of what was sent, so this
+    sends true for it on purpose."""
     ana = regista(cliente, "Ana")
-    r = ana.post("/api/compras", json={"capsulas": 50, "custo_cent": 1500, "nota": None})
+
+    campos = _corpo_enviado_para_post_compras()
+    valores = {"capsulas": 77, "custo_cent": 0, "paga_pela_caixa": True, "nota": None}
+    corpo = {campo: valores[campo] for campo in campos}
+
+    r = ana.post("/api/compras", json=corpo)
+    assert r.status_code == 201, r.text
+
+    compra = ana.get("/api/escritorio").json()["compras"][0]
+    assert compra["capsulas"] == 77
+    assert compra["custo_cent"] == 0
+    assert compra["paga_pela_caixa"] is False, (
+        "a 0-cost purchase (a gift) must never be recorded as paid by the caixa, even if "
+        "the client's own body says otherwise (spec 4.9)"
+    )
+
+
+def test_o_cliente_pode_editar_valor_e_destino_de_um_pagamento_e_o_servidor_grava_os_dois(cliente):
+    """Sends exactly what app.js's guardarEdicaoPagamento builds for the two
+    shapes it actually assembles (a value-only change, and a destination
+    change from a person to the caixa, always sent as para_caixa+recebedor_id
+    together): proves the server applies each field by reading the
+    transferencia back and by a historico_alteracoes row for it."""
+    ana = regista(cliente, "Ana")
+    carla = regista(cliente, "Carla")
+    bruno = regista(cliente, "Bruno")
+    ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
+    bruno_id = bruno.get("/api/eu").json()["utilizador"]["id"]
+
+    r = ana.put("/api/config", json={"caixa_responsavel_id": ana_id})
+    assert r.status_code == 200, r.text
+
+    campos = _campos_enviados_no_patch_transferencias()
+    assert campos == {"valor_cent", "para_caixa", "recebedor_id"}, (
+        f"guardarEdicaoPagamento sends {sorted(campos)}, expected exactly valor_cent, "
+        f"para_caixa and recebedor_id (spec 4.3)"
+    )
+
+    r = carla.post("/api/transferencias", json={"recebedor_id": bruno_id, "para_caixa": False, "valor_cent": 500})
+    assert r.status_code == 201, r.text
+    t_id = r.json()["id"]
+
+    # valor_cent sozinho
+    r = carla.patch(f"/api/transferencias/{t_id}", json={"valor_cent": 700})
+    assert r.status_code == 200, r.text
+    item = next(t for t in carla.get("/api/transferencias").json()["transferencias"] if t["id"] == t_id)
+    assert item["valor_cent"] == 700
+    hist = carla.get(f"/api/historico-alteracoes?entidade=transferencia&id={t_id}").json()["alteracoes"]
+    assert any(a["campo"] == "valor_cent" and a["antes"] == "500" and a["depois"] == "700" for a in hist), (
+        f"PATCH {{'valor_cent': 700}} left no matching historico_alteracoes row: {hist}"
+    )
+
+    # para_caixa + recebedor_id juntos, como o cliente sempre os envia ao mudar o destino
+    r = carla.patch(f"/api/transferencias/{t_id}", json={"para_caixa": True, "recebedor_id": None})
+    assert r.status_code == 200, r.text
+    item = next(t for t in carla.get("/api/transferencias").json()["transferencias"] if t["id"] == t_id)
+    assert item["para_caixa"] is True
+    assert item["recebedor_id"] is None
+    assert item["recebedor"] == "Caixa"
+    hist = carla.get(f"/api/historico-alteracoes?entidade=transferencia&id={t_id}").json()["alteracoes"]
+    assert any(a["campo"] == "para_caixa" for a in hist), f"no historico row for para_caixa: {hist}"
+    assert any(a["campo"] == "recebedor_id" for a in hist), f"no historico row for recebedor_id: {hist}"
+
+
+def test_o_cliente_pode_corrigir_custo_capsulas_e_quem_pagou_de_uma_entrada(cliente):
+    """Sends exactly what app.js's abrirEdicaoCompra builds for each of the
+    three fields it can send on its own (spec 4.9: "qualquer subconjunto de
+    custo_cent, capsulas, paga_pela_caixa"), one at a time, proving the
+    server applies each by reading the entry back and by a
+    historico_alteracoes row for it."""
+    ana = regista(cliente, "Ana")
+    ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
+
+    r = ana.put("/api/config", json={"caixa_responsavel_id": ana_id})
+    assert r.status_code == 200, r.text
+
+    campos = _campos_enviados_no_patch_compras()
+    assert campos == {"capsulas", "custo_cent", "paga_pela_caixa"}, (
+        f"abrirEdicaoCompra sends {sorted(campos)}, expected exactly capsulas, custo_cent "
+        f"and paga_pela_caixa (spec 4.9)"
+    )
+
+    r = ana.post("/api/compras", json={"capsulas": 50, "custo_cent": 1500, "paga_pela_caixa": False, "nota": None})
     assert r.status_code == 201, r.text
     compra_id = ana.get("/api/escritorio").json()["compras"][0]["id"]
 
-    campos = _corpo_enviado_para_patch_compras()
-    valores = {"custo_cent": 1450}
+    r = ana.patch(f"/api/compras/{compra_id}", json={"custo_cent": 1450})
+    assert r.status_code == 200, r.text
+    compra = ana.get("/api/escritorio").json()["compras"][0]
+    assert compra["custo_cent"] == 1450
+    assert compra["custo_estimado"] is False
+    hist = ana.get(f"/api/historico-alteracoes?entidade=compra&id={compra_id}").json()["alteracoes"]
+    assert any(a["campo"] == "custo_cent" and a["antes"] == "1500" and a["depois"] == "1450" for a in hist)
+
+    r = ana.patch(f"/api/compras/{compra_id}", json={"capsulas": 60})
+    assert r.status_code == 200, r.text
+    compra = ana.get("/api/escritorio").json()["compras"][0]
+    assert compra["capsulas"] == 60
+    hist = ana.get(f"/api/historico-alteracoes?entidade=compra&id={compra_id}").json()["alteracoes"]
+    assert any(a["campo"] == "capsulas" and a["antes"] == "50" and a["depois"] == "60" for a in hist)
+
+    r = ana.patch(f"/api/compras/{compra_id}", json={"paga_pela_caixa": True})
+    assert r.status_code == 200, r.text
+    compra = ana.get("/api/escritorio").json()["compras"][0]
+    assert compra["paga_pela_caixa"] is True
+    assert compra["editada"] is True
+    hist = ana.get(f"/api/historico-alteracoes?entidade=compra&id={compra_id}").json()["alteracoes"]
+    assert any(a["campo"] == "paga_pela_caixa" and a["antes"] == "0" and a["depois"] == "1" for a in hist)
+
+
+def test_o_corpo_que_o_cliente_envia_nas_definicoes_grava_mesmo_o_preco_o_limiar_e_o_responsavel(cliente):
+    """Sends exactly what app.js's Definições form builds to the real
+    PUT /api/config, then proves the effect through GET /api/config and a
+    historico_alteracoes row per changed key (spec 4.10)."""
+    ana = regista(cliente, "Ana")
+    bruno = regista(cliente, "Bruno")
+    bruno_id = bruno.get("/api/eu").json()["utilizador"]["id"]
+
+    campos = _corpo_enviado_para_put_config()
+    assert campos == {"preco_cent", "stock_baixo", "caixa_responsavel_id"}, (
+        f"app.js's Definições form sends {sorted(campos)}, expected exactly preco_cent, "
+        f"stock_baixo and caixa_responsavel_id (spec 4.10)"
+    )
+    valores = {"preco_cent": 3000, "stock_baixo": 5, "caixa_responsavel_id": bruno_id}
     corpo = {campo: valores[campo] for campo in campos}
 
-    r = ana.patch(f"/api/compras/{compra_id}", json=corpo)
+    r = ana.put("/api/config", json=corpo)
     assert r.status_code == 200, r.text
 
-    compra = ana.get("/api/escritorio").json()["compras"][0]
-    assert compra["custo_cent"] == 1450, (
-        f"the client's own body {corpo} should have corrected custo_cent to 1450, got "
-        f"{compra['custo_cent']}"
-    )
-    assert compra["custo_estimado"] is False, "correcting the cost by hand must turn off custo_estimado"
+    cfg = ana.get("/api/config").json()
+    assert cfg["preco_cent"] == 3000
+    assert cfg["stock_baixo"] == 5
+    assert cfg["caixa_responsavel_id"] == bruno_id
+
+    hist = ana.get("/api/historico-alteracoes?entidade=config").json()["alteracoes"]
+    assert any(a["campo"] == "preco_cent" and a["depois"] == "3000" for a in hist)
+    assert any(a["campo"] == "stock_baixo" and a["depois"] == "5" for a in hist)
+    assert any(a["campo"] == "caixa_responsavel_id" and a["depois"] == str(bruno_id) for a in hist)
 
 
-def test_os_parametros_que_o_cliente_manda_ao_simular_o_preco_sao_mesmo_lidos_pelo_servidor(cliente):
-    """Sends exactly the query parameter names app.js's preview builds to the
-    real GET /api/preco/simular, and proves the server actually reads them
-    (not just returns the resource default) by picking values that would
-    simulate a different price than the office's current one."""
+# ---- GET /api/config (spec 4.11) ----
+
+def _campos_de_config() -> set[str]:
+    js = _texto_app_js()
+    m = re.search(r"async function carregarConfig\(\) \{(.*?)\n\}\n", js, re.S)
+    assert m, "could not find `async function carregarConfig() {...}` in app.js"
+    campos = set(re.findall(r"config\.(\w+)", m.group(1)))
+    assert campos, "could not find any `config.<campo>` read in carregarConfig"
+    return campos
+
+
+def test_o_get_config_tem_os_campos_que_o_cliente_le(cliente):
     ana = regista(cliente, "Ana")
-    baseline = ana.get("/api/eu").json()["preco_cent"]
-
-    parametros = _parametros_enviados_para_preco_simular()
-    valores = {"capsulas": "100", "custo_cent": "3000"}
-    qs = "&".join(f"{p}={valores[p]}" for p in parametros)
-
-    r = ana.get(f"/api/preco/simular?{qs}")
+    ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
+    r = ana.put("/api/config", json={"preco_cent": 30, "stock_baixo": 20, "caixa_responsavel_id": ana_id})
     assert r.status_code == 200, r.text
-    preco = r.json()["preco_cent"]
-    assert preco == 30, (
-        f"the client's own query parameter names {sorted(parametros)} sent as capsulas=100, "
-        f"custo_cent=3000 on an empty office should simulate a 30 cent coffee (3000 / 100), "
-        f"got {preco} (the office's actual current preco_cent, unaffected by this simulation, "
-        f"is {baseline})"
+
+    campos = _campos_de_config()
+    cfg = ana.get("/api/config").json()
+    for campo in campos:
+        assert campo in cfg, (
+            f"app.js reads `config.{campo}`, but GET /api/config has no such field: {sorted(cfg)}"
+        )
+    assert cfg["preco_cent"] == 30
+    assert cfg["stock_baixo"] == 20
+    assert cfg["caixa_responsavel_id"] == ana_id
+
+
+# ---- GET /api/transferencias: pagamentos de toda a gente (spec 4.5) ----
+
+def _campos_de_pagamento_na_lista() -> set[str]:
+    """Field names app.js reads off an item of GET /api/transferencias's
+    `transferencias` array, both in the Escritório → Pagamentos row builder
+    (linhaPagamento) and in opening its inline edit form
+    (abrirEdicaoPagamento, the one place that also reads de_caixa),
+    extracted instead of retyped."""
+    js = _texto_app_js()
+    m1 = re.search(r"function linhaPagamento\(t\) \{(.*?)\n\}\n", js, re.S)
+    assert m1, "could not find `function linhaPagamento(t) {...}` in app.js"
+    m2 = re.search(r"async function abrirEdicaoPagamento\(li, t\) \{(.*?)\n\}\n", js, re.S)
+    assert m2, "could not find `async function abrirEdicaoPagamento(li, t) {...}` in app.js"
+    campos = set(re.findall(r"(?<!\w)t\.(\w+)", m1.group(1))) | set(re.findall(r"(?<!\w)t\.(\w+)", m2.group(1)))
+    assert campos, "could not find any `t.<campo>` read off a pagamento in app.js"
+    return campos
+
+
+def test_os_campos_de_um_pagamento_na_lista_de_transferencias_batem_com_a_resposta_real(cliente):
+    """Three payments that exercise every shape spec 4.5 describes: person to
+    person, person to caixa, and a de_caixa reimbursement, so pagador,
+    recebedor, para_caixa and de_caixa are all meaningfully non-trivial in
+    the same response."""
+    ana = regista(cliente, "Ana")  # guarda a caixa
+    bruno = regista(cliente, "Bruno")
+    carla = regista(cliente, "Carla")
+    ana_id = ana.get("/api/eu").json()["utilizador"]["id"]
+    bruno_id = bruno.get("/api/eu").json()["utilizador"]["id"]
+    carla_id = carla.get("/api/eu").json()["utilizador"]["id"]
+
+    r = ana.put("/api/config", json={"caixa_responsavel_id": ana_id})
+    assert r.status_code == 200, r.text
+
+    r = bruno.post("/api/transferencias", json={"recebedor_id": carla_id, "para_caixa": False, "valor_cent": 300})
+    assert r.status_code == 201, r.text
+    r = carla.post("/api/transferencias", json={"recebedor_id": None, "para_caixa": True, "valor_cent": 400})
+    assert r.status_code == 201, r.text
+    r = ana.post("/api/transferencias", json={"recebedor_id": bruno_id, "de_caixa": True, "valor_cent": 100})
+    assert r.status_code == 201, r.text
+
+    campos = _campos_de_pagamento_na_lista()
+    lista = ana.get("/api/transferencias").json()["transferencias"]
+    assert len(lista) == 3, f"expected the 3 payments just registered, got {len(lista)}: {lista}"
+    for item in lista:
+        for campo in campos:
+            assert campo in item, (
+                f"app.js reads `t.{campo}` off a pagamento, but the response's item has no "
+                f"such field: {sorted(item)}"
+            )
+
+    de_pessoa = next(t for t in lista if not t["para_caixa"] and not t["de_caixa"])
+    assert de_pessoa["pagador"] == "Bruno"
+    assert de_pessoa["recebedor"] == "Carla"
+    assert de_pessoa["recebedor_id"] == carla_id
+    assert de_pessoa["valor_cent"] == 300
+    assert de_pessoa["confirmada_em"] is None
+    assert de_pessoa["anulada_em"] is None
+    assert de_pessoa["editada"] is False
+
+    para_caixa_item = next(t for t in lista if t["para_caixa"])
+    assert para_caixa_item["pagador"] == "Carla"
+    assert para_caixa_item["recebedor"] == "Caixa"
+    assert para_caixa_item["recebedor_id"] is None
+    assert para_caixa_item["valor_cent"] == 400
+    assert para_caixa_item["pode_confirmar"] is True  # Ana guards the caixa and is asking
+    assert para_caixa_item["pode_anular"] is True
+    assert para_caixa_item["pode_editar"] is False  # only Carla, who paid, can edit it
+
+    de_caixa_item = next(t for t in lista if t["de_caixa"])
+    assert de_caixa_item["pagador"] == "Caixa"
+    assert de_caixa_item["recebedor"] == "Bruno"
+    assert de_caixa_item["recebedor_id"] == bruno_id
+    assert de_caixa_item["valor_cent"] == 100
+    assert de_caixa_item["pode_editar"] is True  # Ana, asking, is the paying side (de_caixa)
+    assert de_caixa_item["pode_anular"] is True
+    assert de_caixa_item["pode_confirmar"] is False
+
+
+# ---- GET /api/historico-alteracoes (spec 4.6) ----
+
+def _campos_de_alteracao_no_historico() -> set[str]:
+    """Field names `formatarAlteracao` reads off one historico_alteracoes
+    item, extracted from its own function body."""
+    js = _texto_app_js()
+    m = re.search(r"function formatarAlteracao\(a\) \{(.*?)\n\}\n", js, re.S)
+    assert m, "could not find `function formatarAlteracao(a) {...}` in app.js"
+    campos = set(re.findall(r"(?<!\w)a\.(\w+)", m.group(1)))
+    assert campos, "could not find any `a.<campo>` read off a historico_alteracoes item in app.js"
+    return campos
+
+
+def test_o_historico_de_uma_alteracao_real_tem_os_campos_que_o_cliente_le(cliente):
+    """Edits a real transferencia (changes its valor_cent) and reads the
+    change back through GET /api/historico-alteracoes, checking every field
+    formatarAlteracao actually reads off an item, by value, not just
+    presence."""
+    ana = regista(cliente, "Ana")
+    bruno = regista(cliente, "Bruno")
+    bruno_id = bruno.get("/api/eu").json()["utilizador"]["id"]
+
+    r = ana.post("/api/transferencias", json={"recebedor_id": bruno_id, "para_caixa": False, "valor_cent": 500})
+    assert r.status_code == 201, r.text
+    t_id = r.json()["id"]
+
+    r = ana.patch(f"/api/transferencias/{t_id}", json={"valor_cent": 600})
+    assert r.status_code == 200, r.text
+
+    campos = _campos_de_alteracao_no_historico()
+    hist = ana.get(f"/api/historico-alteracoes?entidade=transferencia&id={t_id}").json()["alteracoes"]
+    assert hist, "the edit above must have left a historico_alteracoes row"
+    linha = next(a for a in hist if a["campo"] == "valor_cent")
+    for campo in campos:
+        assert campo in linha, (
+            f"app.js reads `a.{campo}` off a historico_alteracoes item, but the response's "
+            f"item has no such field: {sorted(linha)}"
+        )
+    assert linha["antes"] == "500"
+    assert linha["depois"] == "600"
+    assert linha["utilizador"] == "Ana"
+    assert linha["em"]
+
+
+# ---- GET /api/preco/simular sai (spec 4.9) ----
+
+def test_preco_simular_saiu_do_cliente_e_devolve_404_no_servidor(cliente):
+    """Spec 4.9: GET /api/preco/simular sai (404). Checks both halves of the
+    contract: app.js no longer references the route at all, and the server
+    really returns 404 for it, not just that the client stopped calling it."""
+    assert "preco/simular" not in _texto_app_js(), (
+        "app.js still references /preco/simular, but spec 4.9 removes this route"
     )
+    ana = regista(cliente, "Ana")
+    r = ana.get("/api/preco/simular?capsulas=100&custo_cent=3000")
+    assert r.status_code == 404, r.text

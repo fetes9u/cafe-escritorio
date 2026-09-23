@@ -1,7 +1,8 @@
-"""Saldos corridos, preço médio do armário e pagamentos por MB WAY.
+"""Saldos corridos e pagamentos por MB WAY entre pessoas.
 
 Os efeitos verificam-se sempre lendo de volta (/api/eu, /api/movimentos,
-/api/escritorio), nunca só pelo código de estado da escrita.
+/api/escritorio), nunca só pelo código de estado da escrita. A caixa tem os
+seus testes em tests/test_caixa.py.
 """
 import json
 from unittest.mock import MagicMock
@@ -67,8 +68,10 @@ def test_pagamento_mexe_nos_dois_e_anular_devolve(cliente):
     b = regista(cliente, "Bea")
     ids = _ids(cliente)
     corpo = _paga(a, ids["Bea"], 700).json()
-    assert corpo["pagador_id"] == ids["Ana"] and corpo["recebedor_id"] == ids["Bea"]
-    assert corpo["valor_cent"] == 700 and corpo["em"] == "2026-09-11T09:00:00+00:00"
+    assert corpo == {
+        "id": corpo["id"], "pagador_id": ids["Ana"], "recebedor_id": ids["Bea"], "para_caixa": False,
+        "de_caixa": False, "valor_cent": 700, "em": "2026-09-11T09:00:00+00:00",
+    }
     assert (_saldo(a), _saldo(b)) == (700, -700)
 
     assert a.post(f"/api/transferencias/{corpo['id']}/anular").json() == {"ok": True}
@@ -130,6 +133,7 @@ def test_validacao_do_pagamento(cliente):
     regista(cliente, "Bea")
     ids = _ids(cliente)
     assert _paga(a, ids["Ana"], 500).status_code == 400
+    assert a.post("/api/transferencias", json={"valor_cent": 500}).status_code == 400  # a quem?
     assert _paga(a, 9999, 500).status_code == 404
     assert _paga(a, ids["Bea"], 0).status_code == 422
     assert _paga(a, ids["Bea"], 100_001).status_code == 422
@@ -139,38 +143,22 @@ def test_validacao_do_pagamento(cliente):
     assert _saldo(a) == 100_001
 
 
-# ---------- sugestão ----------
-
-def test_sugestao_limitada_ao_que_o_credor_tem_a_receber(cliente):
+def test_sem_responsavel_nao_ha_sugestao_nem_caixa(cliente):
+    """A sugestão aponta só para a caixa: quem adiantou dinheiro não é
+    sugerido, mesmo com saldo a favor."""
     a = regista(cliente, "Ana")
     b = regista(cliente, "Bea")
-    r = regista(cliente, "Rui")
-    ids = _ids(cliente)
     b.post("/api/compras", json={"capsulas": 20, "custo_cent": 500})
-    for _ in range(10):
-        a.post("/api/cafe")
-        r.post("/api/cafe")
-    assert a.get("/api/eu").json()["sugestao"] == {"utilizador_id": ids["Bea"], "nome": "Bea", "valor_cent": 250}
-
-    # O Rui pagou 4 € à Bea: fica com 1,50 € a favor, a Bea com 1,00 €. A Ana
-    # deve 2,50 €, mas o maior credor só tem 1,50 € a receber.
-    _paga(r, ids["Bea"], 400)
-    assert a.get("/api/eu").json()["sugestao"] == {"utilizador_id": ids["Rui"], "nome": "Rui", "valor_cent": 150}
-    assert r.get("/api/eu").json()["sugestao"] is None  # quem não deve não tem sugestão
-
-
-def test_sem_credor_nao_ha_sugestao(cliente):
-    a = regista(cliente, "Ana")
-    b = regista(cliente, "Bea")
     a.post("/api/cafe")
-    b.post("/api/cafe")
     eu = a.get("/api/eu").json()
-    assert eu["saldo_cent"] == -25 and eu["sugestao"] is None
+    assert eu["saldo_cent"] == -25 and eu["sugestao"] is None and eu["caixa"] is None
 
 
-# ---------- o pote ----------
+# ---------- soma dos saldos ----------
 
-def test_soma_dos_saldos_e_o_pote_depois_de_uma_sequencia_mista(cliente, relogio):
+def test_soma_dos_saldos_e_menos_o_fundo_so_entre_pessoas(cliente, relogio):
+    """Sem responsável a caixa fica a zero, e a soma dos saldos é o que as
+    compras custaram menos o que os cafés cobraram."""
     a = regista(cliente, "Ana")
     b = regista(cliente, "Bea")
     r = regista(cliente, "Rui")
@@ -178,7 +166,8 @@ def test_soma_dos_saldos_e_o_pote_depois_de_uma_sequencia_mista(cliente, relogio
 
     def confere():
         e = a.get("/api/escritorio").json()
-        assert sum(p["saldo_cent"] for p in e["pessoas"]) == e["pote"]["valor_cent"], e
+        caixa = e["caixa"]
+        assert sum(p["saldo_cent"] for p in e["pessoas"]) - caixa["dinheiro_cent"] == -caixa["fundo_cent"], e
         return e
 
     a.post("/api/compras", json={"capsulas": 100, "custo_cent": 2500})
@@ -202,7 +191,9 @@ def test_soma_dos_saldos_e_o_pote_depois_de_uma_sequencia_mista(cliente, relogio
         a.post("/api/cafe")
     b.delete("/api/cafe/ultimo")
     e = confere()
-    assert e["pote"]["capsulas"] == 110 - (21 + 3 + 2 - 1)
+    assert e["caixa"]["dinheiro_cent"] == 0
+    assert e["caixa"]["fundo_cent"] == 25 * (21 + 3 + 2 - 1) - (2500 + 450)
+    assert e["stock"]["stock"] == 110 - (21 + 3 + 2 - 1)
 
 
 # ---------- notificações ----------
@@ -242,15 +233,18 @@ def test_push_de_pagamento_so_ao_recebedor_e_ao_anular_so_a_outra_parte(cliente,
 
 # ---------- compras e preço ----------
 
-def test_compra_exige_custo(cliente):
+def test_compra_com_custo_zero_e_uma_oferta(cliente):
     a = regista(cliente, "Ana")
     assert a.post("/api/compras", json={"capsulas": 50}).status_code == 422
-    assert a.post("/api/compras", json={"capsulas": 50, "custo_cent": 0}).status_code == 422
+    assert a.post("/api/compras", json={"capsulas": 50, "custo_cent": -1}).status_code == 422
     assert a.post("/api/compras", json={"capsulas": 50, "custo_cent": 1_000_001}).status_code == 422
     assert a.get("/api/escritorio").json()["compras"] == []
     assert a.post("/api/compras", json={"capsulas": 50, "custo_cent": 1500}).status_code == 201
-    compra = a.get("/api/escritorio").json()["compras"][0]
-    assert compra["custo_cent"] == 1500 and compra["custo_estimado"] is False
+    assert a.post("/api/compras", json={"capsulas": 77, "custo_cent": 0}).status_code == 201
+    compras = {c["capsulas"]: c for c in a.get("/api/escritorio").json()["compras"]}
+    assert compras[50]["custo_cent"] == 1500 and compras[50]["custo_estimado"] is False
+    assert compras[77]["custo_cent"] == 0 and compras[77]["paga_pela_caixa"] is False
+    assert _saldo(a) == 1500
 
 
 def test_corrigir_custo_so_por_quem_pode(cliente):
@@ -276,52 +270,28 @@ def test_corrigir_custo_so_por_quem_pode(cliente):
     assert depois[50]["custo_cent"] == 1450 and depois[50]["custo_estimado"] is False
     assert depois[10]["custo_cent"] == 300 and depois[10]["custo_estimado"] is False
     assert a.patch("/api/compras/9999", json={"custo_cent": 300}).status_code == 404
-    assert a.patch(f"/api/compras/{compras[50]['id']}", json={"custo_cent": 0}).status_code == 422
+    assert a.patch(f"/api/compras/{compras[50]['id']}", json={"custo_cent": -1}).status_code == 422
 
 
-def test_simular_bate_com_o_preco_do_cafe_seguinte(cliente):
+def test_o_preco_medio_saiu(cliente):
     a = regista(cliente, "Ana")
-    a.post("/api/compras", json={"capsulas": 50, "custo_cent": 1250})
-    for _ in range(5):
-        a.post("/api/cafe")
-    simulado = a.get("/api/preco/simular", params={"capsulas": 10, "custo_cent": 600}).json()
-    # 1250 - 5 × 25 + 600 por recuperar, 45 + 10 cápsulas: 1725 / 55
-    assert simulado == {"preco_cent": 31}
-
-    antes = a.get("/api/eu").json()["valor_cent"]
-    a.post("/api/compras", json={"capsulas": 10, "custo_cent": 600})
-    assert a.get("/api/eu").json()["preco_cent"] == simulado["preco_cent"]
-    a.post("/api/cafe")
-    assert a.get("/api/eu").json()["valor_cent"] - antes == simulado["preco_cent"]
-    assert a.get("/api/preco/simular", params={"capsulas": 0, "custo_cent": 600}).status_code == 422
+    assert a.get("/api/preco/simular", params={"capsulas": 10, "custo_cent": 600}).status_code == 404
 
 
 def test_preco_de_eu_e_o_que_o_cafe_seguinte_leva(cliente):
-    """Sem compras, e depois com o armário a esvaziar: o preco_cent de /api/eu
-    é sempre exactamente o valor gravado no café seguinte."""
+    """Sem compras e com compras, antes e depois de mudar o preço: o
+    preco_cent de /api/eu é sempre exactamente o valor gravado no café
+    seguinte."""
     a = regista(cliente, "Ana")
-    for capsulas, custo in ((0, 0), (7, 300)):
+    for capsulas, custo, preco in ((0, 0, None), (7, 300, 31)):
         if capsulas:
             a.post("/api/compras", json={"capsulas": capsulas, "custo_cent": custo})
+            a.put("/api/config", json={"preco_cent": preco})
         for _ in range(4):
             eu = a.get("/api/eu").json()
             a.post("/api/cafe")
             assert a.get("/api/eu").json()["valor_cent"] - eu["valor_cent"] == eu["preco_cent"]
-
-
-def test_ultimo_preco_e_o_do_ultimo_cafe_gravado_nao_o_de_em_mais_recente(cliente, relogio):
-    """Armário vazio: o preço é o do café gravado mais recentemente (por id).
-    Um café offline sincronizado tarde tem um `em` antigo mas foi precificado
-    agora."""
-    a = regista(cliente, "Ana")
-    a.post("/api/compras", json={"capsulas": 2, "custo_cent": 50})
-    a.post("/api/cafe")  # 25
-    relogio.set(2026, 9, 11, 10, 0)
-    a.post("/api/compras", json={"capsulas": 1, "custo_cent": 90})
-    a.post("/api/cafe")  # (25 + 90) / 2 = 57,5 -> 58, o `em` mais recente
-    a.post("/api/cafe", json={"em": "2026-09-10T09:00:00+00:00"})  # a última cápsula: 115 - 58 = 57
-    # stock a 0: o próximo leva o preço do último gravado (57), não o do `em` mais recente (58)
-    assert a.get("/api/eu").json()["preco_cent"] == 57
+    assert a.get("/api/eu").json()["valor_cent"] == 4 * 25 + 4 * 31
 
 
 # ---------- o que /api/eu e /api/movimentos devolvem ----------
@@ -342,9 +312,9 @@ def test_eu_tem_os_campos_novos_e_nao_o_mes_anterior(cliente, relogio):
     assert "mes_anterior" not in eu
     assert eu["saldo_cent"] == -500 - 200 + 50
     assert eu["por_confirmar"] == [
-        {"id": eu["por_confirmar"][0]["id"], "pagador_id": ids["Rui"], "pagador": "Rui",
+        {"id": eu["por_confirmar"][0]["id"], "pagador_id": ids["Rui"], "pagador": "Rui", "para_caixa": False,
          "valor_cent": 200, "em": "2026-09-11T10:00:00+00:00"},
-        {"id": eu["por_confirmar"][1]["id"], "pagador_id": ids["Bea"], "pagador": "Bea",
+        {"id": eu["por_confirmar"][1]["id"], "pagador_id": ids["Bea"], "pagador": "Bea", "para_caixa": False,
          "valor_cent": 500, "em": "2026-09-11T09:00:00+00:00"},
     ]
 
@@ -352,9 +322,8 @@ def test_eu_tem_os_campos_novos_e_nao_o_mes_anterior(cliente, relogio):
 def test_estimativa_soma_o_ja_bebido_ao_preco_corrente(cliente, relogio):
     relogio.set(2026, 9, 1, 9, 0)  # terça, 22 dias úteis no mês
     a = regista(cliente, "Ana", cafes_dia=2)
-    a.post("/api/compras", json={"capsulas": 10, "custo_cent": 250})
     a.post("/api/cafe")  # 25
-    a.post("/api/compras", json={"capsulas": 9, "custo_cent": 540})  # 225 + 540 = 765 / 18 = 42,5 -> 43
+    a.put("/api/config", json={"preco_cent": 43})
     eu = a.get("/api/eu").json()
     assert eu["preco_cent"] == 43 and eu["valor_cent"] == 25
     assert eu["estimativa_cafes"] == 1 + 2 * 21
@@ -376,20 +345,22 @@ def test_movimentos(cliente, relogio):
     a.post("/api/cafe"); a.post("/api/cafe")
 
     m = a.get("/api/movimentos").json()
-    assert m["saldo_cent"] == _saldo(a) == 1500 - 3 * 30 - 200
+    assert m["saldo_cent"] == _saldo(a) == 1500 - 3 * 25 - 200
     assert m["transferencias"] == [
         {"id": t2, "sentido": "recebi", "outro_id": ids["Bea"], "outro": "Bea", "valor_cent": 200,
-         "em": "2026-09-11T09:00:00+00:00", "confirmada_em": None, "anulada_em": None, "anulada_por": None},
+         "em": "2026-09-11T09:00:00+00:00", "confirmada_em": None, "anulada_em": None, "anulada_por": None,
+         "para_caixa": False, "de_caixa": False, "editada": False},
         {"id": t1, "sentido": "paguei", "outro_id": ids["Bea"], "outro": "Bea", "valor_cent": 500,
          "em": "2026-09-10T09:00:00+00:00", "confirmada_em": None,
-         "anulada_em": "2026-09-10T09:00:00+00:00", "anulada_por": ids["Ana"]},
+         "anulada_em": "2026-09-10T09:00:00+00:00", "anulada_por": ids["Ana"],
+         "para_caixa": False, "de_caixa": False, "editada": False},
     ]
     assert m["compras"] == [
         {"id": m["compras"][0]["id"], "capsulas": 50, "custo_cent": 1500, "custo_estimado": False,
-         "em": "2026-08-20T09:00:00+00:00"},
+         "paga_pela_caixa": False, "editada": False, "em": "2026-08-20T09:00:00+00:00"},
     ]
     assert m["meses"] == [
-        {"mes": "2026-09", "cafes": 2, "valor_cent": 60},
-        {"mes": "2026-08", "cafes": 1, "valor_cent": 30},
+        {"mes": "2026-09", "cafes": 2, "valor_cent": 50},
+        {"mes": "2026-08", "cafes": 1, "valor_cent": 25},
     ]
     assert b.get("/api/movimentos").json()["compras"] == []

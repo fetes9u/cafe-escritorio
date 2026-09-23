@@ -76,9 +76,16 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 /* "Outro valor" and "A quem" side by side even though each wraps a full-width input/select */
 #form-pagar .linha { flex-wrap: nowrap; }
 #form-pagar .linha label { min-width: 0; }
-#por-confirmar { margin-top: 10px; }
-#por-confirmar-titulo { margin: 0 0 4px; font-weight: 600; color: var(--texto); }
+#por-confirmar { margin-top: 8px; }
+#por-confirmar-titulo { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
 #por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* keeper card fit (spec 5.1: cabe em 812 sem scroll com 2 pendentes): tighter
+   row padding and line-height than the base li/ul rules. The buttons keep a
+   >= 32px tap target with padding balanced by an equal negative margin, so
+   the extra hit area never grows the row itself. */
+#por-confirmar-lista { margin-top: 2px; }
+#por-confirmar-lista li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
+#por-confirmar-lista .ligacao { padding: 8px 4px; margin: -8px -4px; }
 #dinheiro-lista li { flex-wrap: wrap; }
 /* > (not a descendant selector) so this only ever hits the movement text, never the nested span.nota inside the actions span */
 li.anulada > span:first-child { text-decoration: line-through; color: var(--cinza); }
@@ -129,3 +136,25 @@ li.anulada > span:first-child { text-decoration: line-through; color: var(--cinz
 .faixa-instalar .ligacao { color: #fff; opacity: .85; flex-shrink: 0; }
 /* keeps the fixed banner from covering buttons at the bottom of the page (eg. #btn-novo, #btn-cafe) */
 body.com-faixa-instalar main { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+
+/* caixa: keeper line on the café card, "por confirmar" arrow to the caixa */
+#caixa-contigo { margin-left: 8px; }
+
+/* inline forms (Reembolsar, Editar on a pagamento or a compra) and the
+   change-history expander: both grow a list item to full width so they
+   never fight the row's own flex layout for space */
+#dinheiro-lista li, #pagamentos-lista li, #compras li { flex-wrap: wrap; }
+.fp-inline:not([hidden]) { flex-basis: 100%; margin-top: 8px; }
+.fp-inline form { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; width: 100%; }
+.fp-inline form input, .fp-inline form select { flex: 1; min-width: 90px; }
+.historico-lista { flex-basis: 100%; margin: 6px 0 0; padding: 0; list-style: none; }
+.historico-lista li { border-top: 1px dashed var(--linha); font-size: .85rem; padding: 4px 0; }
+
+/* Reembolsar: an inline row under the person's row in the office table.
+   The button is forced onto its own line inside the saldo cell: that cell
+   is white-space: nowrap for the amount, and "+4,84 € Reembolsar" side by
+   side would overflow the table at 375px. */
+.linha-reembolso td { padding: 8px 0; background: var(--creme); }
+.btn-reembolsar { display: block; margin-top: 2px; white-space: nowrap; }
+
+#form-compra select { flex: 1; min-width: 110px; }

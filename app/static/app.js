@@ -765,9 +765,6 @@ $("form-pagar").onsubmit = async (e) => {
   const destino = $("pagar-recebedor").value;
   if (!destino) return toast("Escolhe a quem pagar.", true);
   const paraCaixa = destino === "caixa";
-  const corpo = paraCaixa
-    ? { recebedor_id: null, para_caixa: true, valor_cent: valorCent }
-    : { recebedor_id: Number(destino), para_caixa: false, valor_cent: valorCent };
   // Quando eu sou a caixa (guardo-a) e pago para a caixa, ou pago a mim
   // próprio via caixa, o pagamento confirma-se sozinho e não há push
   // (spec 3.4/4.2): o toast não promete uma notificação que não é enviada.
@@ -775,7 +772,8 @@ $("form-pagar").onsubmit = async (e) => {
     ? eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id
     : Number(destino) === eu.utilizador.id;
   try {
-    await api("POST", "/transferencias", corpo);
+    if (paraCaixa) await api("POST", "/transferencias", { recebedor_id: null, para_caixa: true, valor_cent: valorCent });
+    else await api("POST", "/transferencias", { recebedor_id: Number(destino), para_caixa: false, valor_cent: valorCent });
     const nome = $("pagar-recebedor").selectedOptions[0].textContent;
     $("form-pagar").hidden = true;
     $("saldo-vista").hidden = false;

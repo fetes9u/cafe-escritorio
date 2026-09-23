@@ -59,8 +59,9 @@ stock         = Σ compras.capsulas − COUNT(cafes)          (o _stock que já 
 
 - `stock > 0`: `preco = max(0, arredonda(por_recuperar / stock))`, com o `arredonda`
   de `logic.py` (0,5 sobe).
-- `stock <= 0`: preço do café mais recente (`valor_cent` do último por `em`); se não
-  houver nenhum, `config.preco_cent`.
+- `stock <= 0`: preço do café gravado mais recentemente (`valor_cent` do último por
+  `id`, não por `em`: um café offline sincronizado tarde tem um `em` antigo mas foi
+  precificado agora); se não houver nenhum, `config.preco_cent`.
 
 O preço calcula-se **no momento em que o café é gravado no servidor** e fica no
 `valor_cent` desse café para sempre. Um café offline sincronizado mais tarde leva o
@@ -288,9 +289,15 @@ Um seletor `Cafés | Dinheiro` por cima. "Cafés" é o calendário que já exist
   `custo estimado`; onde `pode_editar`, um botão **Corrigir custo**.
 - Definições: sai o preço; fica o limiar de aviso.
 
-### 5.4 Service worker
+### 5.4 Service worker e fotografias offline
 
 Sobe `CACHE_VERSION` em `sw.js` para os telemóveis largarem o `app.js` antigo.
+
+O `app.js` guarda fotografias de `/api/eu` e `/api/escritorio` na loja IndexedDB
+`instantaneos` para mostrar sem rede. Depois do deploy, o `app.js` novo pode ler
+uma fotografia no formato antigo (com `mes_anterior`, sem `saldo_cent`). Uma
+fotografia de `/api/eu` sem `saldo_cent`, ou de `/api/escritorio` sem `pote`, trata-se
+como inexistente: nunca se desenha "Deves NaN €".
 
 ## 6. Conversão dos dados de produção
 
@@ -319,8 +326,15 @@ Corre em `db.init()`, numa **única transacção explícita**, e é idempotente.
 Os passos 4 a 6 só tocam em linhas por converter (`IS NULL`, `UNIQUE`), portanto
 um segundo arranque, ou um arranque depois de um crash a meio, não duplica nada.
 
-A tabela `pagamentos` fica na base de dados, sem ser lida nem escrita pelo código
-novo; sai numa versão seguinte.
+A tabela `pagamentos` fica na base de dados de produção, sem ser lida nem escrita
+pelo código novo; sai numa versão seguinte. O `CREATE TABLE pagamentos` sai do
+`SCHEMA`: uma base nova não a tem, e por isso os passos 4 e 6 só correm se a tabela
+existir (`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pagamentos'`).
+
+A idempotência vem das guardas de cada passo (`IS NULL`, `UNIQUE`, `PRAGMA
+table_info` antes de cada `ALTER`), não da transacção. O `executescript(SCHEMA)`
+faz commit implícito; para os passos 4 a 6 correrem mesmo juntos, a ligação passa a
+`isolation_level = None` com `BEGIN IMMEDIATE` e `COMMIT` explícitos à volta deles.
 
 **Voltar atrás:** depois de a versão nova criar uma transferência, voltar à imagem
 anterior **não é suportado**. A imagem antiga não vê as transferências, e ao
@@ -338,7 +352,9 @@ Lógica pura (`tests/test_logic.py`):
 - preço médio: 18,50 € e 60 cápsulas dá 31; stock 0 usa o último preço; valor por
   recuperar negativo dá 0; o 0,5 arredonda para cima.
 - exemplo da revisão: caixa de 100 a 25 €, 50 bebidas, caixa de 10 a 6 €; ao
-  esvaziar o armário, `por_recuperar` fica a menos de 1 € de 0 e nunca 17,50 €.
+  esvaziar o armário, `por_recuperar` fica **exactamente 0**. Com `por_recuperar >= 0`,
+  arredondamento com 0,5 a subir e sem apagar nem corrigir compras, o último café
+  leva o que falta ao cêntimo e o valor nunca fica negativo pelo caminho.
 
 API (`tests/test_api.py` e um ficheiro novo `tests/test_saldos.py`):
 - o exemplo do pedido: bebo 16 cafés a 0,25 €, pago 5 € → `saldo_cent = 100`.
@@ -354,13 +370,21 @@ API (`tests/test_api.py` e um ficheiro novo `tests/test_saldos.py`):
   pagamento já não dá 409.
 
 Migração (`tests/test_db_migracao.py`):
+- a base antiga constrói-se **à mão**, com a DDL literal do esquema de `55e7ec6`,
+  antes de chamar `init()`. Um teste que chama `init()` sobre um ficheiro vazio e
+  depois insere linhas passa quer a migração funcione quer não.
 - base no esquema antigo com cafés, compras, um pagamento normal e um "próprio"
   (pagador = recebedor) → depois de `init()`: preços dos cafés pagos vêm da
   fotografia, os outros do `preco_cent`; compras com custo estimado; uma
   transferência, não duas.
 - `init()` duas vezes → nada duplicado.
 
-Contrato (`tests/test_contrato_api.py`): os campos que o `app.js` lê de `/api/eu`
+Fumo (`scripts/smoke_deploy.py`): um passo novo pelo percurso do utilizador: duas
+contas, uma bebe, paga à outra por `POST /api/transferencias`, e o `saldo_cent` das
+duas em `/api/eu` mexe no sentido certo (ler de volta, não confiar no 201).
+
+Contrato (`tests/test_contrato_api.py`, escrito depois de juntar as duas metades,
+porque só passa com o cliente e o servidor novos na mesma árvore): os campos que o `app.js` lê de `/api/eu`
 (`saldo_cent`, `sugestao`, `por_confirmar`), de `/api/movimentos` e de
 `/api/escritorio` (`saldo_cent`, `pote`, `pode_editar`) extraídos do cliente por
 regex e confirmados contra a resposta real, e o corpo que envia a

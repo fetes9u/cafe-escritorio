@@ -614,6 +614,16 @@ function textoStock(s) {
   return `${cab}<small>${acaba} · ${fim} · ritmo ${s.ritmo_dia}/dia útil</small>`;
 }
 
+// Shared by #stock (Café) and #esc-stock (Escritório): warning colours
+// whenever stock is actually low, or when it will not last the month even
+// if it is not low yet; .baixo stays bold, .aviso does not (spec 3 dos
+// revisores: "chega ao fim do mês? não" sozinho não é tão urgente).
+function classeStock(s) {
+  if (s.baixo) return "faixa baixo";
+  if (!s.chega_ao_fim_do_mes) return "faixa aviso";
+  return "faixa";
+}
+
 // Shared by the Café card's own "por confirmar" block and the compact block
 // at the top of the Escritório tab (spec: pending confirmations first):
 // same data (eu.por_confirmar), same confirm / "Não recebi" actions. Only
@@ -670,7 +680,7 @@ function desenharEu() {
   desenharPorConfirmar($("por-confirmar"), $("por-confirmar-titulo"), $("por-confirmar-lista"));
 
   const s = $("stock");
-  s.className = "faixa" + (eu.stock.baixo ? " baixo" : "");
+  s.className = classeStock(eu.stock);
   s.innerHTML = textoStock(eu.stock);
 }
 
@@ -1253,7 +1263,7 @@ function desenharEscritorio() {
   }
 
   const s = $("esc-stock");
-  s.className = "faixa" + (e.stock.baixo ? " baixo" : "");
+  s.className = classeStock(e.stock);
   s.innerHTML = textoStock(e.stock);
 
   const pagaComCaixa = $("compra-paga-com").querySelector('.segment[data-pay-with="caixa"]');

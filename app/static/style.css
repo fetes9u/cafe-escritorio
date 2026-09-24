@@ -5,7 +5,9 @@
   --texto: #2b2320;
   --cinza: #7a716c;
   --linha: #e6dcd2;
-  --ok: #2f7d4a;
+  /* darkened from #2f7d4a: that one measured 4.36:1 on --ok-fundo, under the
+     4.5:1 floor for normal text; #1a5f33 measures 6.64:1 on the same background. */
+  --ok: #1a5f33;
   --aviso-fundo: #fbe4e1;
   --aviso: #a3261b;
   --ok-fundo: #e3f2e7;
@@ -52,7 +54,12 @@ form .ligacao { margin-top: 10px; }
 .nota { color: var(--cinza); font-size: .9rem; }
 .faixa { padding: 12px 14px; border-radius: 12px; background: var(--ok-fundo); color: var(--ok); margin: 12px 0; }
 .faixa.baixo { background: var(--aviso-fundo); color: var(--aviso); font-weight: 600; }
-.faixa small { display: block; font-weight: 400; opacity: .85; }
+/* .faixa.aviso: same warning colours as .baixo but normal weight, for
+   "chega ao fim do mês? não" on its own (stock itself is not low yet). */
+.faixa.aviso { background: var(--aviso-fundo); color: var(--aviso); }
+/* no opacity here: it was dropping the small text under the 4.5:1 contrast
+   floor on both the ok and the warning background. */
+.faixa small { display: block; font-weight: 400; }
 .rodape { text-align: center; margin-top: 24px; color: var(--cinza); }
 
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; margin-top: 10px; }

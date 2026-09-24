@@ -42,6 +42,12 @@ button:disabled { opacity: .5; }
    focus for any text input under 16px, so this has to hold even inside a
    nested context with a smaller inherited font. */
 input, select, textarea { font: inherit; font-size: max(16px, 1rem); padding: 10px; border: 1px solid var(--linha); border-radius: 8px; background: #fff; width: 100%; }
+/* Locked look for a disabled input (the cost under Oferta): iOS Safari
+   otherwise draws it with its own faint opacity and ignores a plain
+   `color`, so both are set explicitly. */
+input:disabled, select:disabled, textarea:disabled {
+  background: var(--linha); color: var(--cinza); opacity: 1; -webkit-text-fill-color: var(--cinza);
+}
 label { display: block; margin: 10px 0; }
 label > input, label > select { margin-top: 4px; }
 .pin { font-size: 2rem; letter-spacing: .6em; text-align: center; padding: 14px; }
@@ -94,6 +100,9 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 .purchase-form .field > span { font-size: .85rem; font-weight: 600; color: var(--cinza); }
 .purchase-form .field-full { grid-column: 1 / -1; }
 .purchase-form input, .purchase-form select { min-width: 0; }
+/* Small section heading above a list (eg. #compras' "Registos recentes"),
+   same weight/size/colour as a purchase-form field label. */
+.subtitulo { font-size: .85rem; font-weight: 600; color: var(--cinza); margin: 14px 0 4px; }
 .purchase-form .field > input, .purchase-form .field > select { margin-top: 0; }
 .purchase-form > button[type="submit"] { grid-column: 1 / -1; }
 .purchase-form-compact .edit-actions { display: flex; gap: 14px; align-items: center; }
@@ -101,10 +110,14 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 /* "Paga com" segmented control: three equal buttons instead of a select,
    so the label is always fully visible on a narrow phone screen. */
 .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+/* .segmented-dois: the create form's control when Caixa is hidden (only the
+   keeper sees it), two segments filling the row instead of leaving a gap
+   where the third used to be. */
+.segmented.segmented-dois { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 1fr; }
 .segment { min-width: 0; padding: 10px 4px; font-size: .9rem; text-align: center;
-  border: 1px solid var(--linha); border-radius: 8px; background: #fff; color: var(--texto); }
+  border: 1px solid var(--linha); border-radius: 8px; background: #fff; color: var(--texto);
+  display: flex; align-items: center; justify-content: center; min-height: 44px; }
 .segment[aria-pressed="true"] { background: var(--cafe); color: #fff; border-color: var(--cafe); }
-.segment:disabled { opacity: .4; }
 
 /* saldo e pagamentos por MB WAY */
 #btn-pagar { display: block; width: 100%; }

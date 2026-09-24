@@ -1304,19 +1304,23 @@ function desenharEscritorio() {
   s.className = classeStock(e.stock);
   s.innerHTML = textoStock(e.stock);
 
-  const pagaComCaixa = $("compra-paga-com").querySelector('.segment[data-pay-with="caixa"]');
-  const semCaixa = !e.caixa || e.caixa.responsavel_id == null;
-  pagaComCaixa.disabled = semCaixa;
-  pagaComCaixa.setAttribute("aria-disabled", String(semCaixa));
+  // Caixa só é uma opção para quem a guarda (o servidor recusa quem não é);
+  // escondida, não desactivada, para os outros dois segmentos preencherem a
+  // linha (spec 7d, .segmented-dois).
+  const pagaComContainer = $("compra-paga-com");
+  const pagaComCaixa = pagaComContainer.querySelector('.segment[data-pay-with="caixa"]');
+  pagaComCaixa.hidden = !souGuarda;
+  pagaComContainer.classList.toggle("segmented-dois", !souGuarda);
   if (compraPagaComUtilizador !== e.eu) {
     // primeira vez que este utilizador vê o formulário nesta sessão: aplica
     // a omissão (caixa se for o guarda, bolso senão).
     definirPagaCom($("compra-paga-com"), pagaComPadrao(e), $("compra-custo"));
     compraPagaComUtilizador = e.eu;
-  } else if (pagaComAtual($("compra-paga-com")) === "caixa" && semCaixa) {
+  } else if (pagaComAtual($("compra-paga-com")) === "caixa" && !souGuarda) {
     definirPagaCom($("compra-paga-com"), "bolso", $("compra-custo"));
   }
 
+  $("compras-titulo").hidden = !e.compras.length;
   const ul = $("compras");
   ul.innerHTML = "";
   for (const c of e.compras) {
@@ -1582,7 +1586,7 @@ function abrirEdicaoCompra(li, c) {
 
 $("compra-paga-com").onclick = (ev) => {
   const btn = ev.target.closest(".segment");
-  if (!btn || btn.disabled) return;
+  if (!btn) return;
   definirPagaCom($("compra-paga-com"), btn.dataset.payWith, $("compra-custo"));
 };
 

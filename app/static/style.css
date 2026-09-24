@@ -57,6 +57,7 @@ form .ligacao { margin-top: 10px; }
 .cartao { background: #fff; border: 1px solid var(--linha); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
 .linha { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
 .linha label { flex: 1; margin: 0; }
+.month-row label { flex: 1 1 11rem; }
 .nota { color: var(--cinza); font-size: .9rem; }
 .faixa { padding: 12px 14px; border-radius: 12px; background: var(--ok-fundo); color: var(--ok); margin: 12px 0; }
 .faixa.baixo { background: var(--aviso-fundo); color: var(--aviso); font-weight: 600; }
@@ -79,7 +80,7 @@ form .ligacao { margin-top: 10px; }
 .cashbox-cell { min-width: 0; }
 .cashbox-cell span { display: block; font-size: .8rem; color: var(--cinza); }
 .cashbox-cell b { display: block; font-size: 1.05rem; white-space: nowrap; }
-.cashbox-fund-note { margin: 6px 0 0; }
+.cashbox-cell small { display: block; margin-top: 2px; font-size: .75rem; line-height: 1.3; }
 
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; margin-top: 10px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--linha); font-size: .95rem; }

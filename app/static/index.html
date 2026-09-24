@@ -78,9 +78,9 @@
       <div class="linha"><b id="saldo-frase"></b><span id="caixa-contigo" class="nota" hidden></span></div>
       <p id="saldo-sugestao" class="nota" hidden></p>
       <button type="button" id="btn-pagar">Paguei por MB WAY</button>
-      <div id="por-confirmar" class="por-confirmar" hidden>
-        <p id="por-confirmar-titulo" class="nota por-confirmar-titulo"></p>
-        <ul id="por-confirmar-lista" class="por-confirmar-lista"></ul>
+      <div id="por-confirmar" class="pending-confirmations" hidden>
+        <p id="por-confirmar-titulo" class="nota pending-confirmations-title"></p>
+        <ul id="por-confirmar-lista" class="pending-confirmations-list"></ul>
       </div>
     </div>
     <form id="form-pagar" hidden>
@@ -130,9 +130,9 @@
 <!-- ESCRITÓRIO -->
 <section id="vista-escritorio" hidden>
   <p id="esc-fotografia-aviso" class="nota aviso-fotografia" hidden></p>
-  <div id="esc-por-confirmar" class="por-confirmar cartao" hidden>
-    <p id="esc-por-confirmar-titulo" class="nota por-confirmar-titulo"></p>
-    <ul id="esc-por-confirmar-lista" class="por-confirmar-lista"></ul>
+  <div id="office-pending-confirmations" class="pending-confirmations cartao" hidden>
+    <p id="office-pending-confirmations-title" class="nota pending-confirmations-title"></p>
+    <ul id="office-pending-confirmations-list" class="pending-confirmations-list"></ul>
   </div>
   <div class="linha">
     <label>Mês <select id="sel-mes"></select></label>
@@ -172,7 +172,7 @@
         <input id="compra-nota" maxlength="80" placeholder="Ex.: reposição mensal"></label>
       <button type="submit" class="field-full">Registar entrada</button>
     </form>
-    <h3 id="compras-titulo" class="subtitulo" hidden>Registos recentes</h3>
+    <h3 id="purchases-title" class="subheading" hidden>Registos recentes</h3>
     <ul id="compras"></ul>
   </details>
 

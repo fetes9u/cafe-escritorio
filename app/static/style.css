@@ -60,9 +60,9 @@ form .ligacao { margin-top: 10px; }
 .nota { color: var(--cinza); font-size: .9rem; }
 .faixa { padding: 12px 14px; border-radius: 12px; background: var(--ok-fundo); color: var(--ok); margin: 12px 0; }
 .faixa.baixo { background: var(--aviso-fundo); color: var(--aviso); font-weight: 600; }
-/* .faixa.aviso: same warning colours as .baixo but normal weight, for
+/* .faixa.warning: same warning colours as .baixo but normal weight, for
    "chega ao fim do mês? não" on its own (stock itself is not low yet). */
-.faixa.aviso { background: var(--aviso-fundo); color: var(--aviso); }
+.faixa.warning { background: var(--aviso-fundo); color: var(--aviso); }
 /* no opacity here: it was dropping the small text under the 4.5:1 contrast
    floor on both the ok and the warning background. */
 .faixa small { display: block; font-weight: 400; }
@@ -74,12 +74,12 @@ form .ligacao { margin-top: 10px; }
    margin because it is a div now (no keeper text used to be a <p>, which
    had it for free from the UA stylesheet). */
 #esc-caixa { margin: 12px 0; }
-.caixa-titulo { margin: 0 0 6px; font-weight: 600; }
-.caixa-celulas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.caixa-celula { min-width: 0; }
-.caixa-celula span { display: block; font-size: .8rem; color: var(--cinza); }
-.caixa-celula b { display: block; font-size: 1.05rem; white-space: nowrap; }
-.caixa-fundo-nota { margin: 6px 0 0; }
+.cashbox-title { margin: 0 0 6px; font-weight: 600; }
+.cashbox-cells { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cashbox-cell { min-width: 0; }
+.cashbox-cell span { display: block; font-size: .8rem; color: var(--cinza); }
+.cashbox-cell b { display: block; font-size: 1.05rem; white-space: nowrap; }
+.cashbox-fund-note { margin: 6px 0 0; }
 
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; margin-top: 10px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--linha); font-size: .95rem; }
@@ -102,7 +102,7 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 .purchase-form input, .purchase-form select { min-width: 0; }
 /* Small section heading above a list (eg. #compras' "Registos recentes"),
    same weight/size/colour as a purchase-form field label. */
-.subtitulo { font-size: .85rem; font-weight: 600; color: var(--cinza); margin: 14px 0 4px; }
+.subheading { font-size: .85rem; font-weight: 600; color: var(--cinza); margin: 14px 0 4px; }
 .purchase-form .field > input, .purchase-form .field > select { margin-top: 0; }
 .purchase-form > button[type="submit"] { grid-column: 1 / -1; }
 .purchase-form-compact .edit-actions { display: flex; gap: 14px; align-items: center; }
@@ -110,10 +110,10 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 /* "Paga com" segmented control: three equal buttons instead of a select,
    so the label is always fully visible on a narrow phone screen. */
 .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-/* .segmented-dois: the create form's control when Caixa is hidden (only the
+/* .segmented-two: the create form's control when Caixa is hidden (only the
    keeper sees it), two segments filling the row instead of leaving a gap
    where the third used to be. */
-.segmented.segmented-dois { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 1fr; }
+.segmented.segmented-two { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 1fr; }
 .segment { min-width: 0; padding: 10px 4px; font-size: .9rem; text-align: center;
   border: 1px solid var(--linha); border-radius: 8px; background: #fff; color: var(--texto);
   display: flex; align-items: center; justify-content: center; min-height: 44px; }
@@ -137,20 +137,21 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
    span` (never `li > div.fp-inline`) is what keeps this off the inline edit
    forms' own Cancelar/Guardar, which live in a div, not a span. */
 li > span .ligacao { padding: 8px 6px; margin: -8px -6px; }
-/* .acoes: the span wrapping a row's action buttons, spaced apart instead of
-   sitting glued together with only the join(" ")'s single space between. */
-.acoes { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-/* .por-confirmar: shared by the Café card's own block and the compact block
-   at the top of the Escritório tab (spec: pending confirmations first), so
-   both look the same instead of the styling living on one #id only. */
-.por-confirmar { margin-top: 8px; }
-.por-confirmar-titulo { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
-.por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* .actions: the span wrapping a row's action buttons, spaced apart instead
+   of sitting glued together with only the join(" ")'s single space between. */
+.actions { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* .pending-confirmations: shared by the Café card's own #por-confirmar block
+   and the compact #office-pending-confirmations block at the top of the
+   Escritório tab (spec: pending confirmations first), so both look the same
+   instead of the styling living on one #id only. */
+.pending-confirmations { margin-top: 8px; }
+.pending-confirmations-title { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
+.pending-confirmations-list li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 /* keeper card fit (spec 5.1: cabe em 812 sem scroll com 2 pendentes): tighter
    row padding and line-height than the base li/ul rules. The tap target
    itself is the shared `li > span .ligacao` rule above. */
-.por-confirmar-lista { margin-top: 2px; }
-.por-confirmar-lista li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
+.pending-confirmations-list { margin-top: 2px; }
+.pending-confirmations-list li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
 #dinheiro-lista li { flex-wrap: wrap; }
 /* > (not a descendant selector) so this only ever hits the movement text, never the nested span.nota inside the actions span */
 li.anulada > span:first-child { text-decoration: line-through; color: var(--cinza); }

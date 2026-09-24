@@ -197,9 +197,9 @@ def test_dinheiro_lista_sends_the_right_verb_for_each_action():
 
 # ---------- service worker ----------
 
-def test_cache_version_is_v8():
+def test_cache_version_is_v9():
     text = (STATIC / "sw.js").read_text(encoding="utf-8")
-    assert 'CACHE_VERSION = "v8"' in text
+    assert 'CACHE_VERSION = "v9"' in text
 
 
 # ---------- caixa: preco/simular is gone, the new sections exist ----------
@@ -246,3 +246,90 @@ def test_index_has_the_new_caixa_sections_with_their_ids():
     ):
         assert f'id="{id_}"' in html, f"missing #{id_}"
     assert 'id="esc-pote"' not in html, "esc-pote was replaced by esc-caixa (spec 4.8: sai pote, entra caixa)"
+
+
+# ---------- iPhone fixes: "Paga com" segmented control, 16px inputs, keeper default, negative cash ----------
+
+def test_form_compra_paga_com_is_a_three_option_segmented_control_not_a_select():
+    """iOS Safari's intrinsic select width, plus the old flex row's wrapping,
+    cut the option text ("custo (€", "Do meu b"). #compra-paga-com is now a
+    button group, not a <select>."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    inicio = html.index('id="form-compra"')
+    fim = html.index("</form>", inicio)
+    bloco = html[inicio:fim]
+    assert '<select id="compra-paga-com">' not in bloco
+    assert 'id="compra-paga-com" class="segmented"' in bloco
+    for valor, rotulo in (("caixa", "Caixa"), ("bolso", "Do meu bolso"), ("oferta", "Oferta")):
+        assert f'data-pay-with="{valor}"' in bloco and f'>{rotulo}<' in bloco
+
+
+def test_form_compra_is_a_two_column_grid_with_labelled_fields():
+    """Row 1: Cápsulas/Custo side by side, each with a visible label (not
+    just a placeholder); row 3: Nota full width; row 4: submit full width."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    inicio = html.index('id="form-compra"')
+    fim = html.index("</form>", inicio)
+    bloco = html[inicio:fim]
+    assert 'class="purchase-form"' in bloco
+    assert "<span>Cápsulas</span>" in bloco
+    assert "<span>Custo (€)</span>" in bloco
+    assert "<span>Paga com</span>" in bloco
+    assert "<span>Nota (opcional)</span>" in bloco
+    assert 'class="field-full">Registar entrada' in bloco
+
+
+def test_purchase_edit_form_reuses_the_same_grid_and_segmented_control():
+    """abrirEdicaoCompra's inline edit must not break the same way the
+    create form did: same purchase-form grid, same segmented control."""
+    js = _app_js()
+    inicio = js.index("function abrirEdicaoCompra(")
+    corpo = js[inicio:js.index("\n}\n", inicio)]
+    assert 'class="purchase-form purchase-form-compact"' in corpo
+    assert 'class="segmented ec-paga-com"' in corpo
+    assert "<select" not in corpo
+
+
+def test_input_select_textarea_have_a_16px_font_floor():
+    """iOS Safari zooms the whole page when a focused text input computes
+    under 16px; input/select/textarea must have an explicit floor, not just
+    an inherited font-size."""
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    assert "input, select, textarea" in css
+    inicio = css.index("input, select, textarea")
+    linha = css[inicio:css.index("\n", inicio)]
+    assert "font-size: max(16px, 1rem)" in linha
+
+
+def test_paga_com_default_follows_the_caixa_keeper():
+    """Defaults to "caixa" when the logged-in user is the keeper
+    (escritorio.eu === escritorio.caixa.responsavel_id), "bolso" otherwise,
+    and the submit handler resets to that same default instead of a fixed
+    "bolso"."""
+    js = _app_js()
+    assert "function pagaComPadrao(e) {" in js
+    inicio = js.index("function pagaComPadrao(e) {")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    assert "e.caixa.responsavel_id === e.eu" in corpo
+    assert '"caixa"' in corpo and '"bolso"' in corpo
+
+    inicio = js.index('$("form-compra").onsubmit')
+    corpo = js[inicio:js.index("\n};", inicio)]
+    assert "pagaComPadrao(escritorio)" in corpo
+    assert '$("compra-paga-com").value = "bolso"' not in corpo
+
+
+def test_negative_caixa_cash_never_renders_as_a_negative_amount():
+    """caixa.dinheiro_cent < 0 means the caixa owes its keeper money, not
+    the other way round; must never print as "-2,00 €"."""
+    js = _app_js()
+    assert "function fraseDinheiroCaixa(c) {" in js
+    inicio = js.index("function fraseDinheiroCaixa(c) {")
+    corpo = js[inicio:js.index("\n}", inicio)]
+    assert "c.dinheiro_cent < 0" in corpo
+    assert "a caixa deve" in corpo
+
+    inicio = js.index("function desenharEu() {")
+    corpo_eu = js[inicio:js.index("\n}", inicio)]
+    assert "eu.caixa.dinheiro_cent < 0" in corpo_eu
+    assert "A caixa deve-te" in corpo_eu

@@ -9,6 +9,7 @@ let historico = null;    // resposta de /api/historico (o mês visível)
 let histDia = null;      // dia seleccionado no calendário, "YYYY-MM-DD"
 let histPorDia = new Map(); // dia -> { n, horas: [{ hora, fila }] }, servidor mais fila offline
 let dinheiro = null;     // resposta de /api/movimentos (separador Histórico → Dinheiro)
+let compraPagaComUtilizador = null; // id do utilizador para quem o "Paga com" da entrada já tem o valor por omissão aplicado
 
 // ---------- utilidades ----------
 
@@ -623,7 +624,11 @@ function desenharEu() {
 
   $("saldo-frase").textContent = fraseSaldo(eu.saldo_cent);
   if (eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id) {
-    $("caixa-contigo").textContent = `Caixa contigo: ${euros(eu.caixa.dinheiro_cent)}`;
+    // dinheiro_cent < 0: a caixa deve dinheiro ao guarda, não o guarda à
+    // caixa, por isso a frase muda de "Caixa contigo" para "A caixa deve-te".
+    $("caixa-contigo").textContent = eu.caixa.dinheiro_cent < 0
+      ? `A caixa deve-te ${euros(Math.abs(eu.caixa.dinheiro_cent))}`
+      : `Caixa contigo: ${euros(eu.caixa.dinheiro_cent)}`;
     $("caixa-contigo").hidden = false;
   } else {
     $("caixa-contigo").hidden = true;
@@ -1161,6 +1166,33 @@ function saldoCurto(cent) {
   return (cent < 0 ? "-" : "+") + euros(Math.abs(cent));
 }
 
+// dinheiro_cent negativo significa que a caixa deve dinheiro ao guarda, nunca
+// o contrário; nunca mostrar como um valor negativo.
+function fraseDinheiroCaixa(c) {
+  return c.dinheiro_cent < 0
+    ? `a caixa deve ${euros(Math.abs(c.dinheiro_cent))} a ${c.responsavel}`
+    : `${euros(c.dinheiro_cent)} em dinheiro`;
+}
+
+// "Paga com" da entrada de cápsulas: por omissão é "caixa" quando quem está
+// autenticado é o próprio guarda da caixa, senão "bolso" (spec: pergunta 2).
+function pagaComPadrao(e) {
+  return e && e.caixa && e.caixa.responsavel_id === e.eu ? "caixa" : "bolso";
+}
+
+function pagaComAtual(container) {
+  const btn = container.querySelector('.segment[aria-pressed="true"]');
+  return btn ? btn.dataset.payWith : "bolso";
+}
+
+function definirPagaCom(container, valor, custoInput) {
+  for (const btn of container.querySelectorAll(".segment")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.payWith === valor));
+  }
+  if (valor === "oferta") { custoInput.value = "0.00"; custoInput.disabled = true; }
+  else { custoInput.disabled = false; if (custoInput.value === "0.00") custoInput.value = ""; }
+}
+
 function desenharEscritorio() {
   const e = escritorio;
   const sel = $("sel-mes");
@@ -1173,10 +1205,12 @@ function desenharEscritorio() {
   sel.value = e.mes;
   $("esc-total").textContent = `${plural(e.total_cafes, "cápsula", "cápsulas")} · ${euros(e.total_cent)}`;
   // "Caixa com Ana: 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €",
-  // ou o aviso sem responsável (spec 5.3).
+  // ou o aviso sem responsável (spec 5.3). dinheiro_cent < 0 significa que a
+  // caixa deve dinheiro ao guarda (ex.: pagou cápsulas do bolso a mais), por
+  // isso não pode aparecer como "-2,00 € em dinheiro".
   $("esc-caixa").textContent = (!e.caixa || e.caixa.responsavel_id == null)
     ? "Ninguém guarda a caixa. Escolhe nas Definições."
-    : `Caixa com ${e.caixa.responsavel}: ${euros(e.caixa.dinheiro_cent)} em dinheiro · ${euros(e.caixa.por_receber_cent)} por receber · fundo ${euros(e.caixa.fundo_cent)}`;
+    : `Caixa com ${e.caixa.responsavel}: ${fraseDinheiroCaixa(e.caixa)} · ${euros(e.caixa.por_receber_cent)} por receber · fundo ${euros(e.caixa.fundo_cent)}`;
 
   const souGuarda = e.caixa && e.caixa.responsavel_id === e.eu;
   const tb = $("tabela").querySelector("tbody");
@@ -1196,9 +1230,17 @@ function desenharEscritorio() {
   s.className = "faixa" + (e.stock.baixo ? " baixo" : "");
   s.innerHTML = textoStock(e.stock);
 
-  $("compra-paga-com").querySelector('option[value="caixa"]').disabled = !e.caixa || e.caixa.responsavel_id == null;
-  if ($("compra-paga-com").value === "caixa" && $("compra-paga-com").querySelector('option[value="caixa"]').disabled) {
-    $("compra-paga-com").value = "bolso";
+  const pagaComCaixa = $("compra-paga-com").querySelector('.segment[data-pay-with="caixa"]');
+  const semCaixa = !e.caixa || e.caixa.responsavel_id == null;
+  pagaComCaixa.disabled = semCaixa;
+  pagaComCaixa.setAttribute("aria-disabled", String(semCaixa));
+  if (compraPagaComUtilizador !== e.eu) {
+    // primeira vez que este utilizador vê o formulário nesta sessão: aplica
+    // a omissão (caixa se for o guarda, bolso senão).
+    definirPagaCom($("compra-paga-com"), pagaComPadrao(e), $("compra-custo"));
+    compraPagaComUtilizador = e.eu;
+  } else if (pagaComAtual($("compra-paga-com")) === "caixa" && semCaixa) {
+    definirPagaCom($("compra-paga-com"), "bolso", $("compra-custo"));
   }
 
   const ul = $("compras");
@@ -1420,12 +1462,15 @@ function abrirEdicaoCompra(li, c) {
   // ter pedido.
   if ((eu && eu.caixa) || pagaComInicial === "caixa") pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
   pagaComOpcoes.push({ value: "bolso", label: "Do meu bolso" }, { value: "oferta", label: "Oferta" });
-  container.innerHTML = `<form class="linha">
-    <label>Cápsulas <input type="number" min="1" max="10000" class="ec-capsulas" required></label>
-    <label>Custo (€) <input type="number" step="0.01" min="0" max="10000" class="ec-custo" required></label>
-    <label>Paga com <select class="ec-paga-com"></select></label>
-    <button type="submit">Guardar</button>
-    <button type="button" class="ligacao ec-cancelar">Cancelar</button>
+  const segmentosHTML = pagaComOpcoes.map((o) => `<button type="button" class="segment" data-pay-with="${o.value}" aria-pressed="${o.value === pagaComInicial}">${o.label}</button>`).join("");
+  container.innerHTML = `<form class="purchase-form purchase-form-compact">
+    <label class="field"><span>Cápsulas</span><input type="number" min="1" max="10000" class="ec-capsulas" required></label>
+    <label class="field"><span>Custo (€)</span><input type="number" step="0.01" min="0" max="10000" class="ec-custo" required></label>
+    <div class="field field-full"><span>Paga com</span><div class="segmented ec-paga-com" role="group" aria-label="Paga com">${segmentosHTML}</div></div>
+    <div class="field-full edit-actions">
+      <button type="submit">Guardar</button>
+      <button type="button" class="ligacao ec-cancelar">Cancelar</button>
+    </div>
   </form>`;
   const form = container.querySelector("form");
   const capsulasInput = form.querySelector(".ec-capsulas");
@@ -1433,22 +1478,17 @@ function abrirEdicaoCompra(li, c) {
   const sel = form.querySelector(".ec-paga-com");
   capsulasInput.value = c.capsulas;
   custoInput.value = (c.custo_cent / 100).toFixed(2);
-  for (const o of pagaComOpcoes) {
-    const op = document.createElement("option");
-    op.value = o.value; op.textContent = o.label;
-    sel.appendChild(op);
-  }
-  sel.value = pagaComInicial;
   custoInput.disabled = pagaComInicial === "oferta";
-  sel.onchange = () => {
-    if (sel.value === "oferta") { custoInput.value = "0.00"; custoInput.disabled = true; }
-    else { custoInput.disabled = false; if (custoInput.value === "0.00") custoInput.value = ""; }
+  sel.onclick = (ev) => {
+    const btn = ev.target.closest(".segment");
+    if (!btn) return;
+    definirPagaCom(sel, btn.dataset.payWith, custoInput);
   };
   form.querySelector(".ec-cancelar").onclick = () => { container.hidden = true; container.innerHTML = ""; };
   form.onsubmit = async (e) => {
     e.preventDefault();
     const capsulas = Number(capsulasInput.value);
-    const pagaCom = sel.value;
+    const pagaCom = pagaComAtual(sel);
     const custoCent = pagaCom === "oferta" ? 0 : Math.round(Number(custoInput.value.replace(",", ".")) * 100);
     if (pagaCom !== "oferta" && !(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
     const corpo = {};
@@ -1466,15 +1506,15 @@ function abrirEdicaoCompra(li, c) {
   container.hidden = false;
 }
 
-$("compra-paga-com").onchange = () => {
-  const custo = $("compra-custo");
-  if ($("compra-paga-com").value === "oferta") { custo.value = "0.00"; custo.disabled = true; }
-  else { custo.disabled = false; if (custo.value === "0.00") custo.value = ""; }
+$("compra-paga-com").onclick = (ev) => {
+  const btn = ev.target.closest(".segment");
+  if (!btn || btn.disabled) return;
+  definirPagaCom($("compra-paga-com"), btn.dataset.payWith, $("compra-custo"));
 };
 
 $("form-compra").onsubmit = async (e) => {
   e.preventDefault();
-  const pagaCom = $("compra-paga-com").value;
+  const pagaCom = pagaComAtual($("compra-paga-com"));
   const custoCent = pagaCom === "oferta" ? 0 : Math.round(Number($("compra-custo").value.replace(",", ".")) * 100);
   if (pagaCom !== "oferta" && !(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
   try {
@@ -1485,10 +1525,10 @@ $("form-compra").onsubmit = async (e) => {
       nota: $("compra-nota").value || null,
     });
     $("form-compra").reset();
-    $("compra-paga-com").value = "bolso";
-    $("compra-custo").disabled = false;
     toast("Entrada registada.");
     await carregarEscritorio(escritorio.mes);
+    // volta sempre para a omissão de quem está autenticado, não para "bolso" fixo.
+    definirPagaCom($("compra-paga-com"), pagaComPadrao(escritorio), $("compra-custo"));
   } catch (err) { toast(err.message, true); }
 };
 

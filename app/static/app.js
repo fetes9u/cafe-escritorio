@@ -1090,7 +1090,7 @@ function desenharDinheiro() {
         if (!t.confirmada_em) {
           if (t.sentido === "paguei") botoes.push(`<button type="button" class="ligacao" data-mov-anular="${t.id}">Anular</button>`);
           else {
-            botoes.push(`<button type="button" class="ligacao" data-mov-confirmar="${t.id}">✓</button>`);
+            botoes.push(`<button type="button" class="ligacao" data-mov-confirmar="${t.id}" aria-label="Confirmar pagamento de ${t.outro}">✓ Recebi</button>`);
             botoes.push(`<button type="button" class="ligacao" data-mov-anular="${t.id}">Não recebi</button>`);
           }
         }
@@ -1098,7 +1098,7 @@ function desenharDinheiro() {
         if (t.sentido === "paguei") botoes.push(`<button type="button" class="ligacao" data-mov-editar="${t.id}">Editar</button>`);
       }
       const editado = t.editada ? ` <button type="button" class="ligacao" data-mov-historico="${t.id}">editado</button>` : "";
-      li.innerHTML = `<span>${texto} · ${dataCurta(t.em)}${editado}</span><span>${botoes.join(" ")}</span>`
+      li.innerHTML = `<span>${texto} · ${dataCurta(t.em)}${editado}</span><span class="acoes">${botoes.join(" ")}</span>`
         + `<div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul>`;
     }
     ul.appendChild(li);
@@ -1281,7 +1281,7 @@ function desenharEscritorio() {
     const estimado = c.custo_estimado ? ' <span class="nota">custo estimado</span>' : "";
     const editado = c.editada ? ` <button type="button" class="ligacao" data-historico-compra="${c.id}">editado</button>` : "";
     li.innerHTML = `<span>+${c.capsulas} · ${euros(c.custo_cent)} · ${origem} · ${dataCurta(c.em)}`
-      + `${c.nota ? " · " + c.nota : ""}${estimado}${editado}</span><span>${acoes.join(" ")}</span>`
+      + `${c.nota ? " · " + c.nota : ""}${estimado}${editado}</span><span class="acoes">${acoes.join(" ")}</span>`
       + `<div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul>`;
     ul.appendChild(li);
   }
@@ -1299,12 +1299,12 @@ function linhaPagamento(t) {
   const souRecebedor = (t.para_caixa && eu && eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id)
     || (eu && t.recebedor_id === eu.utilizador.id);
   const botoes = [];
-  if (t.pode_confirmar) botoes.push(`<button type="button" class="ligacao" data-pg-confirmar="${t.id}">✓</button>`);
+  if (t.pode_confirmar) botoes.push(`<button type="button" class="ligacao" data-pg-confirmar="${t.id}" aria-label="Confirmar pagamento de ${t.pagador}">✓ Recebi</button>`);
   if (t.pode_anular) botoes.push(`<button type="button" class="ligacao" data-pg-anular="${t.id}">${souRecebedor ? "Não recebi" : "Anular"}</button>`);
   if (t.pode_editar) botoes.push(`<button type="button" class="ligacao" data-pg-editar="${t.id}">Editar</button>`);
   const editado = t.editada ? ` <button type="button" class="ligacao" data-pg-historico="${t.id}">editado</button>` : "";
   return `<li data-id="${t.id}"><span>${t.pagador} → ${t.recebedor} · ${euros(t.valor_cent)} · ${dataCurta(t.em)} · ${estado}${editado}</span>`
-    + `<span>${botoes.join(" ")}</span><div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul></li>`;
+    + `<span class="acoes">${botoes.join(" ")}</span><div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul></li>`;
 }
 
 function desenharPagamentos() {

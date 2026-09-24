@@ -98,6 +98,15 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 /* "Outro valor" and "A quem" side by side even though each wraps a full-width input/select */
 #form-pagar .linha { flex-wrap: nowrap; }
 #form-pagar .linha label { min-width: 0; }
+/* Inline action links inside a list row (Café "por confirmar", Escritório
+   pagamentos/compras, Histórico dinheiro): padded to a real >= 32px tap
+   target with a matching negative margin so the row barely grows. `li >
+   span` (never `li > div.fp-inline`) is what keeps this off the inline edit
+   forms' own Cancelar/Guardar, which live in a div, not a span. */
+li > span .ligacao { padding: 8px 6px; margin: -8px -6px; }
+/* .acoes: the span wrapping a row's action buttons, spaced apart instead of
+   sitting glued together with only the join(" ")'s single space between. */
+.acoes { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 /* .por-confirmar: shared by the Café card's own block and the compact block
    at the top of the Escritório tab (spec: pending confirmations first), so
    both look the same instead of the styling living on one #id only. */
@@ -106,7 +115,7 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 .por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 /* keeper card fit (spec 5.1: cabe em 812 sem scroll com 2 pendentes): tighter
    row padding and line-height than the base li/ul rules. The tap target
-   itself is the shared `li > span .ligacao` rule below. */
+   itself is the shared `li > span .ligacao` rule above. */
 .por-confirmar-lista { margin-top: 2px; }
 .por-confirmar-lista li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
 #dinheiro-lista li { flex-wrap: wrap; }

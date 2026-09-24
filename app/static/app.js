@@ -655,7 +655,7 @@ function desenharPorConfirmar(elBloco, elTitulo, elLista) {
       const destino = t.para_caixa ? " → caixa" : "";
       const li = document.createElement("li");
       li.innerHTML = `<span>${t.pagador}${destino} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
-        + `<span class="acoes"><button type="button" class="ligacao" data-confirmar="${t.id}" aria-label="Confirmar pagamento de ${t.pagador}">✓ Recebi</button> `
+        + `<span class="acoes"><button type="button" class="ligacao" data-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.pagador}">✓ Recebi</button> `
         + `<button type="button" class="ligacao" data-recusar="${t.id}">Não recebi</button></span>`;
       elLista.appendChild(li);
     }
@@ -696,6 +696,13 @@ function desenharEu() {
   }
 
   desenharPorConfirmar($("por-confirmar"), $("por-confirmar-titulo"), $("por-confirmar-lista"));
+  // Also redraws the Escritório block, not just desenharEscritorio(): every
+  // recarregarEu() call site is what actually changes eu.por_confirmar (a
+  // pagamentos-lista confirm, a keeper change in Definições, ...), and most
+  // of them never call carregarEscritorio() afterwards, or call it before
+  // recarregarEu(). Rendering here too means the block is never stale
+  // regardless of call order, even while the Escritório tab is not visible.
+  desenharPorConfirmar($("esc-por-confirmar"), $("esc-por-confirmar-titulo"), $("esc-por-confirmar-lista"));
 
   const s = $("stock");
   s.className = classeStock(eu.stock);
@@ -1118,7 +1125,7 @@ function desenharDinheiro() {
         if (!t.confirmada_em) {
           if (t.sentido === "paguei") botoes.push(`<button type="button" class="ligacao" data-mov-anular="${t.id}">Anular</button>`);
           else {
-            botoes.push(`<button type="button" class="ligacao" data-mov-confirmar="${t.id}" aria-label="Confirmar pagamento de ${t.outro}">✓ Recebi</button>`);
+            botoes.push(`<button type="button" class="ligacao" data-mov-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.outro}">✓ Recebi</button>`);
             botoes.push(`<button type="button" class="ligacao" data-mov-anular="${t.id}">Não recebi</button>`);
           }
         }
@@ -1351,7 +1358,7 @@ function linhaPagamento(t) {
   const souRecebedor = (t.para_caixa && eu && eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id)
     || (eu && t.recebedor_id === eu.utilizador.id);
   const botoes = [];
-  if (t.pode_confirmar) botoes.push(`<button type="button" class="ligacao" data-pg-confirmar="${t.id}" aria-label="Confirmar pagamento de ${t.pagador}">✓ Recebi</button>`);
+  if (t.pode_confirmar) botoes.push(`<button type="button" class="ligacao" data-pg-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.pagador}">✓ Recebi</button>`);
   if (t.pode_anular) botoes.push(`<button type="button" class="ligacao" data-pg-anular="${t.id}">${souRecebedor ? "Não recebi" : "Anular"}</button>`);
   if (t.pode_editar) botoes.push(`<button type="button" class="ligacao" data-pg-editar="${t.id}">Editar</button>`);
   const editado = t.editada ? ` <button type="button" class="ligacao" data-pg-historico="${t.id}">editado</button>` : "";
@@ -1534,11 +1541,14 @@ function abrirEdicaoCompra(li, c) {
   const container = li.querySelector(".fp-inline");
   const pagaComInicial = c.custo_cent === 0 ? "oferta" : c.paga_pela_caixa ? "caixa" : "bolso";
   const pagaComOpcoes = [];
-  // "Caixa" fica na lista se há responsável hoje, ou se esta compra já foi
-  // paga pela caixa dantes (responsável entretanto removido): sem isto, o
-  // select cairia na primeira opção e Guardar mudaria "paga com" sem ninguém
-  // ter pedido.
-  if ((eu && eu.caixa) || pagaComInicial === "caixa") pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
+  // "Caixa" fica na lista se quem está autenticado é o guarda hoje (spec 7d:
+  // o servidor recusa quem não é), ou se esta compra já foi paga pela caixa
+  // dantes (responsável entretanto mudado ou removido): sem isto, o select
+  // cairia na primeira opção e Guardar mudaria "paga com" sem ninguém ter
+  // pedido.
+  if ((eu && eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id) || pagaComInicial === "caixa") {
+    pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
+  }
   pagaComOpcoes.push({ value: "bolso", label: "Do meu bolso" }, { value: "oferta", label: "Oferta" });
   const segmentosHTML = pagaComOpcoes.map((o) => `<button type="button" class="segment" data-pay-with="${o.value}" aria-pressed="${o.value === pagaComInicial}">${o.label}</button>`).join("");
   container.innerHTML = `<form class="purchase-form purchase-form-compact">

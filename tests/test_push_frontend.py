@@ -148,7 +148,8 @@ def test_notif_settings_live_in_the_office_view_not_the_cafe_view():
 
 def test_notif_settings_are_closed_by_default():
     """Design review (Escritório tab): the accordion opens on demand like
-    Definições and Pagamentos, instead of pushing those down every time."""
+    Definições already does, instead of pushing Entradas de cápsulas and
+    Definições down every time."""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     start = html.index('id="notif-secao"')
     end = html.index(">", start)

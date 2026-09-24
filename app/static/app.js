@@ -699,7 +699,7 @@ function renderPendingConfirmations(blockEl, titleEl, listEl) {
     titleEl.textContent = plural(pc.length, "pagamento por confirmar", "pagamentos por confirmar");
     listEl.innerHTML = "";
     for (const t of pc) {
-      const destino = t.para_caixa ? " → caixa" : "";
+      const destino = t.para_caixa ? " → Caixa" : "";
       const li = document.createElement("li");
       li.innerHTML = `<span>${t.pagador}${destino} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
         + `<span class="actions"><button type="button" class="ligacao" data-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.pagador}">✓ Recebi</button> `
@@ -1336,9 +1336,8 @@ function desenharEscritorio() {
       + `<div class="cashbox-cells">`
       + `<div class="cashbox-cell"><span>${capitalize(fraseDinheiroCaixa(e.caixa))}</span><b>${euros(Math.abs(e.caixa.dinheiro_cent))}</b></div>`
       + `<div class="cashbox-cell"><span>Por receber</span><b>${euros(e.caixa.por_receber_cent)}</b></div>`
-      + `<div class="cashbox-cell"><span>Fundo</span><b>${euros(e.caixa.fundo_cent)}</b></div>`
-      + `</div>`
-      + `<p class="nota cashbox-fund-note">sobra depois de pagar as cápsulas</p>`;
+      + `<div class="cashbox-cell"><span>Fundo</span><b>${euros(e.caixa.fundo_cent)}</b><small class="nota">sobra depois de pagar as cápsulas</small></div>`
+      + `</div>`;
   }
 
   const souGuarda = e.caixa && e.caixa.responsavel_id === e.eu;

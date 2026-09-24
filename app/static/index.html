@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Café do escritório</title>
-<link rel="stylesheet" href="/static/style.css?v=8">
+<link rel="stylesheet" href="/static/style.css?v=9">
 <link rel="manifest" href="/static/manifest.json">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png">
@@ -151,18 +151,22 @@
 
   <details class="cartao" open>
     <summary>Entradas de cápsulas</summary>
-    <form id="form-compra" class="linha">
-      <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="cápsulas" required>
-      <input id="compra-custo" type="number" step="0.01" min="0.01" max="10000" placeholder="custo (€)" required>
-      <label>Paga com
-        <select id="compra-paga-com">
-          <option value="caixa">Caixa</option>
-          <option value="bolso" selected>Do meu bolso</option>
-          <option value="oferta">Oferta</option>
-        </select>
-      </label>
-      <input id="compra-nota" maxlength="80" placeholder="nota (opcional)">
-      <button type="submit">Registar entrada</button>
+    <form id="form-compra" class="purchase-form">
+      <label class="field"><span>Cápsulas</span>
+        <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="Ex.: 100" required></label>
+      <label class="field"><span>Custo (€)</span>
+        <input id="compra-custo" type="number" step="0.01" min="0.01" max="10000" placeholder="Ex.: 25,00" required></label>
+      <div class="field field-full">
+        <span>Paga com</span>
+        <div id="compra-paga-com" class="segmented" role="group" aria-label="Paga com">
+          <button type="button" class="segment" data-pay-with="caixa" aria-pressed="false">Caixa</button>
+          <button type="button" class="segment" data-pay-with="bolso" aria-pressed="true">Do meu bolso</button>
+          <button type="button" class="segment" data-pay-with="oferta" aria-pressed="false">Oferta</button>
+        </div>
+      </div>
+      <label class="field field-full"><span>Nota (opcional)</span>
+        <input id="compra-nota" maxlength="80" placeholder="Ex.: reposição mensal"></label>
+      <button type="submit" class="field-full">Registar entrada</button>
     </form>
     <ul id="compras"></ul>
   </details>
@@ -207,6 +211,6 @@
   <button type="button" id="instalar-fechar" class="ligacao">Dispensar</button>
 </div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

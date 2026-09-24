@@ -345,7 +345,14 @@ function abrirDB() {
       if (!db.objectStoreNames.contains("fila")) db.createObjectStore("fila", { keyPath: "cliente_id" });
       if (!db.objectStoreNames.contains("instantaneos")) db.createObjectStore("instantaneos", { keyPath: "chave" });
     };
-    pedido.onsuccess = () => resolve(pedido.result);
+    pedido.onsuccess = () => {
+      const db = pedido.result;
+      // Let go the moment another connection needs the database closed to
+      // proceed: another tab of this same app, or our own apagarDB() call
+      // below asking indexedDB.deleteDatabase() to run on logout.
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
     pedido.onerror = () => reject(pedido.error);
   });
   return dbPromise;
@@ -384,12 +391,36 @@ async function idbLimpar(loja) {
 // everyone's data, so per-user keying only stays safe on a shared device if
 // nothing survives past the session that fetched it.
 async function apagarDB() {
+  // Close the connection this tab already holds before deleting: a delete
+  // cannot proceed while any connection stays open. Doing it here does not
+  // depend on onversionchange firing in time, because the connection is
+  // shut before the delete request is even issued, so our own connection
+  // can never be the one that puts the delete into "blocked".
+  if (dbPromise) {
+    const previousConnection = await withTimeout(dbPromise.catch(() => null), 2000, "apagarDB waiting for the existing connection");
+    if (previousConnection) previousConnection.close();
+  }
   dbPromise = null;
   await new Promise((resolve) => {
     const pedido = indexedDB.deleteDatabase(DB_NOME);
-    pedido.onsuccess = () => resolve();
-    pedido.onerror = () => resolve();
-    pedido.onblocked = () => resolve();
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(limite);
+      resolve();
+    };
+    // Bounded from the moment the request is issued, not only once
+    // "blocked" fires: a delete queued behind an earlier pending one can
+    // sit with no event at all (no success, no error, no blocked), so the
+    // timeout below is the only thing standing between that and a hang.
+    const limite = setTimeout(settle, 2000);
+    pedido.onsuccess = settle;
+    pedido.onerror = settle;
+    // "blocked" means some other connection is still open (typically a
+    // second tab): that is still waiting, not done, so it is left to the
+    // bounded timeout above instead of resolving here.
+    pedido.onblocked = () => {};
   });
 }
 
@@ -598,11 +629,27 @@ $("form-registo").onsubmit = async (e) => {
 
 // ---------- café ----------
 
+// Races a promise against a bounded timeout so a single offline cache
+// write can never hold up something as important as logging in: a write
+// that is still pending past `ms` is abandoned (and logged), not awaited.
+// The timer is cleared on the normal path so a fast promise never leaves a
+// stray "exceeded" message behind after it already won the race.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`${label}: exceeded ${ms}ms, continuing without waiting for it.`);
+      resolve();
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function entrar() {
   try {
     eu = await api("GET", "/eu");
     writeLocal(UTILIZADOR_ATUAL_KEY, String(eu.utilizador.id));
-    await guardarInstantaneo("eu", eu.utilizador.id, eu);
+    await withTimeout(guardarInstantaneo("eu", eu.utilizador.id, eu), 2000, "guardarInstantaneo(eu)");
     $("fotografia-aviso").hidden = true;
   } catch (erro) {
     if (!erro || !erro.rede) throw erro; // not an offline case: let the caller send us to the login screen

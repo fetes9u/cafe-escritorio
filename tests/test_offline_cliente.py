@@ -332,6 +332,63 @@ def test_logout_nao_apaga_sem_esvaziar_a_fila_ou_confirmar():
     )
 
 
+def _funcao_sincrona(js, nome):
+    """Same as _funcao, but for a plain `function <nome>(...) { ... }` that
+    is never declared `async` (abrirDB is one)."""
+    marcador = f"function {nome}("
+    assert marcador in js, f"could not find {marcador} in app.js"
+    inicio = js.index(marcador)
+    chaveta = js.index("{", inicio)
+    bloco, fim = _bloco_balanceado(js, chaveta)
+    return js[inicio:fim + 1]
+
+
+# ---------- the iPhone shared-device hang: a held connection blocks the wipe ----------
+
+def test_apagar_db_fecha_a_ligacao_existente_antes_de_apagar():
+    """The bug this pins: apagarDB() used to call indexedDB.deleteDatabase()
+    while the IDBDatabase connection abrirDB() had already opened was still
+    open. The delete then stayed pending, and the next login's
+    guardarInstantaneo() call (which opens the database again) queued behind
+    it and never resolved, so entrar() hung on the "Quem és?" screen with no
+    JS error. Closing the held connection before deleting is what unblocks
+    it."""
+    js = _app_js()
+    corpo = _funcao(js, "apagarDB")
+
+    pos_close = corpo.index(".close()")
+    pos_delete = corpo.index("indexedDB.deleteDatabase(")
+    assert pos_close < pos_delete, (
+        "apagarDB must close the connection it already holds before asking "
+        "indexedDB.deleteDatabase() to run, or the delete stays blocked behind it"
+    )
+    m = re.search(r"await\s+\w+\(\s*dbPromise", corpo)
+    assert m, "apagarDB must actually await the existing dbPromise to get the connection it holds"
+    assert m.start() < pos_close, (
+        "apagarDB must await the existing dbPromise before closing it, not just null the variable "
+        "out and hope the connection went away on its own"
+    )
+
+
+def test_abrir_db_liberta_a_ligacao_em_onversionchange():
+    """A held connection must also let go on its own the moment something
+    else needs the database closed, whether that is another tab of the app
+    or our own apagarDB() call above. Without this, a fresh connection
+    opened right after a wipe attempt could go on to block the next delete
+    the same way."""
+    js = _app_js()
+    corpo = _funcao_sincrona(js, "abrirDB")
+
+    m = re.search(r"onversionchange\s*=\s*\(\)\s*=>\s*\{", corpo)
+    assert m, "abrirDB must install db.onversionchange so other holders let go of the connection"
+    bloco_handler, _ = _bloco_balanceado(corpo, corpo.index("{", m.start()))
+    assert ".close()" in bloco_handler, "onversionchange must close the connection"
+    assert "dbPromise = null" in bloco_handler, (
+        "onversionchange must also clear dbPromise so the next abrirDB() call reopens instead of "
+        "handing back a closed connection"
+    )
+
+
 def test_sessao_expirada_limpa_fotografias_mas_nao_a_fila():
     """An expired session is not a decision to discard work (item 1 governs
     that), but /api/escritorio's snapshot is someone else's data and has no

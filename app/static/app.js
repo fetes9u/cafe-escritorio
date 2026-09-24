@@ -9,11 +9,19 @@ let historico = null;    // resposta de /api/historico (o mês visível)
 let histDia = null;      // dia seleccionado no calendário, "YYYY-MM-DD"
 let histPorDia = new Map(); // dia -> { n, horas: [{ hora, fila }] }, servidor mais fila offline
 let dinheiro = null;     // resposta de /api/movimentos (separador Histórico → Dinheiro)
+let compraPagaComUtilizador = null; // id do utilizador para quem o "Paga com" da entrada já tem o valor por omissão aplicado
 
 // ---------- utilidades ----------
 
+// Cents to a pt-PT decimal string ("2500" -> "25,00"), no € sign: shared by
+// euros() and by every place that pre-fills a money input, which must show
+// a comma too (spec 6: iOS Safari's decimal keyboard on a text input does
+// not turn "," into "." on its own).
+function centsToText(cent) {
+  return (cent / 100).toFixed(2).replace(".", ",");
+}
 function euros(cent) {
-  return (cent / 100).toFixed(2).replace(".", ",") + " €";
+  return centsToText(cent) + " €";
 }
 function dataCurta(iso) {
   const d = new Date(iso);
@@ -63,11 +71,22 @@ async function opcoesDestino(cfg) {
   return opcoes;
 }
 
-// Parses a euro-amount input into cents, or null if out of the 0,01..1000 €
-// range the server accepts (spec 4.2/4.3).
+// Parses a euro-amount text input (type=text inputmode=decimal, never
+// type=number: spec 6, iOS Safari's numeric keyboard does not accept a
+// comma there). Accepts a comma or a dot as the decimal separator and at
+// most 2 decimals; anything else (letters, 3+ decimals, empty, a lone
+// separator) is rejected rather than silently rounded. Returns cents, or
+// null when malformed or outside [minCent, maxCent].
+function parseAmountCents(valor, minCent, maxCent) {
+  const m = /^\s*(\d+)(?:[.,](\d{1,2}))?\s*$/.exec(valor || "");
+  if (!m) return null;
+  const cent = Number(m[1]) * 100 + Number((m[2] || "").padEnd(2, "0"));
+  return cent >= minCent && cent <= maxCent ? cent : null;
+}
+
+// Payments and reimbursements: 0,01..1000 € (spec 4.2/4.3).
 function lerValorCent(input) {
-  const cent = Math.round(Number(input.value.replace(",", ".")) * 100);
-  return cent >= 1 && cent <= 100000 ? cent : null;
+  return parseAmountCents(input.value, 1, 100000);
 }
 
 // Payments, edits and settings always need the network (spec item 6): never
@@ -172,14 +191,14 @@ async function expandirHistorico(ul, entidade, id) {
 function montarFormPagamentoInline(container, opts) {
   const temDestino = !!opts.opcoesDestino;
   container.innerHTML = `<form class="linha">
-    <label>Valor (€) <input type="number" step="0.01" min="0.01" max="1000" class="fp-valor" required></label>
+    <label>Valor (€) <input type="text" inputmode="decimal" autocomplete="off" class="fp-valor" required></label>
     ${temDestino ? '<label>Destino <select class="fp-destino" required></select></label>' : ""}
     <button type="submit">${opts.textoGuardar || "Guardar"}</button>
     <button type="button" class="ligacao fp-cancelar">Cancelar</button>
   </form>`;
   const form = container.querySelector("form");
   const valorInput = form.querySelector(".fp-valor");
-  valorInput.value = (opts.valorInicial / 100).toFixed(2);
+  valorInput.value = centsToText(opts.valorInicial);
   let sel = null;
   if (temDestino) {
     sel = form.querySelector(".fp-destino");
@@ -209,7 +228,7 @@ function montarFormPagamentoInline(container, opts) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     const valorCent = lerValorCent(valorInput);
-    if (valorCent === null) return toast("Mete um valor entre 0,01 € e 1000 €.", true);
+    if (valorCent === null) return toast("Valor inválido: mete um valor entre 0,01 € e 1000 €, ex.: 25,00.", true);
     await opts.onGuardar(valorCent, sel ? sel.value : undefined);
   };
   container.hidden = false;
@@ -326,7 +345,14 @@ function abrirDB() {
       if (!db.objectStoreNames.contains("fila")) db.createObjectStore("fila", { keyPath: "cliente_id" });
       if (!db.objectStoreNames.contains("instantaneos")) db.createObjectStore("instantaneos", { keyPath: "chave" });
     };
-    pedido.onsuccess = () => resolve(pedido.result);
+    pedido.onsuccess = () => {
+      const db = pedido.result;
+      // Let go the moment another connection needs the database closed to
+      // proceed: another tab of this same app, or our own apagarDB() call
+      // below asking indexedDB.deleteDatabase() to run on logout.
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
     pedido.onerror = () => reject(pedido.error);
   });
   return dbPromise;
@@ -365,12 +391,36 @@ async function idbLimpar(loja) {
 // everyone's data, so per-user keying only stays safe on a shared device if
 // nothing survives past the session that fetched it.
 async function apagarDB() {
+  // Close the connection this tab already holds before deleting: a delete
+  // cannot proceed while any connection stays open. Doing it here does not
+  // depend on onversionchange firing in time, because the connection is
+  // shut before the delete request is even issued, so our own connection
+  // can never be the one that puts the delete into "blocked".
+  if (dbPromise) {
+    const previousConnection = await withTimeout(dbPromise.catch(() => null), 2000, "apagarDB waiting for the existing connection");
+    if (previousConnection) previousConnection.close();
+  }
   dbPromise = null;
   await new Promise((resolve) => {
     const pedido = indexedDB.deleteDatabase(DB_NOME);
-    pedido.onsuccess = () => resolve();
-    pedido.onerror = () => resolve();
-    pedido.onblocked = () => resolve();
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(limite);
+      resolve();
+    };
+    // Bounded from the moment the request is issued, not only once
+    // "blocked" fires: a delete queued behind an earlier pending one can
+    // sit with no event at all (no success, no error, no blocked), so the
+    // timeout below is the only thing standing between that and a hang.
+    const limite = setTimeout(settle, 2000);
+    pedido.onsuccess = settle;
+    pedido.onerror = settle;
+    // "blocked" means some other connection is still open (typically a
+    // second tab): that is still waiting, not done, so it is left to the
+    // bounded timeout above instead of resolving here.
+    pedido.onblocked = () => {};
   });
 }
 
@@ -579,11 +629,27 @@ $("form-registo").onsubmit = async (e) => {
 
 // ---------- café ----------
 
+// Races a promise against a bounded timeout so a single offline cache
+// write can never hold up something as important as logging in: a write
+// that is still pending past `ms` is abandoned (and logged), not awaited.
+// The timer is cleared on the normal path so a fast promise never leaves a
+// stray "exceeded" message behind after it already won the race.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`${label}: exceeded ${ms}ms, continuing without waiting for it.`);
+      resolve();
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function entrar() {
   try {
     eu = await api("GET", "/eu");
     writeLocal(UTILIZADOR_ATUAL_KEY, String(eu.utilizador.id));
-    await guardarInstantaneo("eu", eu.utilizador.id, eu);
+    await withTimeout(guardarInstantaneo("eu", eu.utilizador.id, eu), 2000, "guardarInstantaneo(eu)");
     $("fotografia-aviso").hidden = true;
   } catch (erro) {
     if (!erro || !erro.rede) throw erro; // not an offline case: let the caller send us to the login screen
@@ -613,6 +679,39 @@ function textoStock(s) {
   return `${cab}<small>${acaba} · ${fim} · ritmo ${s.ritmo_dia}/dia útil</small>`;
 }
 
+// Shared by #stock (Café) and #esc-stock (Escritório): warning colours
+// whenever stock is actually low, or when it will not last the month even
+// if it is not low yet; .baixo stays bold, .warning does not (design review
+// item 3: "will it last the month? no" on its own is less urgent).
+function stockBannerClass(s) {
+  if (s.baixo) return "faixa baixo";
+  if (!s.chega_ao_fim_do_mes) return "faixa warning";
+  return "faixa";
+}
+
+// Shared by the Café card's own "por confirmar" block and the compact block
+// at the top of the Escritório tab (spec: pending confirmations first):
+// same data (eu.por_confirmar), same confirm / "Não recebi" actions. Only
+// the target elements differ, so this never duplicates the renderer.
+function renderPendingConfirmations(blockEl, titleEl, listEl) {
+  const pc = eu.por_confirmar || [];
+  if (pc.length) {
+    titleEl.textContent = plural(pc.length, "pagamento por confirmar", "pagamentos por confirmar");
+    listEl.innerHTML = "";
+    for (const t of pc) {
+      const destino = t.para_caixa ? " → Caixa" : "";
+      const li = document.createElement("li");
+      li.innerHTML = `<span>${t.pagador}${destino} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
+        + `<span class="actions"><button type="button" class="ligacao" data-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.pagador}">✓ Recebi</button> `
+        + `<button type="button" class="ligacao" data-recusar="${t.id}">Não recebi</button></span>`;
+      listEl.appendChild(li);
+    }
+    blockEl.hidden = false;
+  } else {
+    blockEl.hidden = true;
+  }
+}
+
 // Only fills #saldo-vista: #form-pagar is a sibling element, never touched
 // here, so a redraw triggered by sync/online events never wipes a form the
 // person has open (eg. mid-typing an amount).
@@ -623,7 +722,11 @@ function desenharEu() {
 
   $("saldo-frase").textContent = fraseSaldo(eu.saldo_cent);
   if (eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id) {
-    $("caixa-contigo").textContent = `Caixa contigo: ${euros(eu.caixa.dinheiro_cent)}`;
+    // dinheiro_cent < 0: a caixa deve dinheiro ao guarda, não o guarda à
+    // caixa, por isso a frase muda de "Caixa contigo" para "A caixa deve-te".
+    $("caixa-contigo").textContent = eu.caixa.dinheiro_cent < 0
+      ? `A caixa deve-te ${euros(Math.abs(eu.caixa.dinheiro_cent))}`
+      : `Caixa contigo: ${euros(eu.caixa.dinheiro_cent)}`;
     $("caixa-contigo").hidden = false;
   } else {
     $("caixa-contigo").hidden = true;
@@ -639,26 +742,17 @@ function desenharEu() {
     $("btn-pagar").classList.add("discreto"); // no debt: paying ahead is still possible, just less urgent
   }
 
-  const pc = eu.por_confirmar || [];
-  if (pc.length) {
-    $("por-confirmar-titulo").textContent = plural(pc.length, "pagamento por confirmar", "pagamentos por confirmar");
-    const ul = $("por-confirmar-lista");
-    ul.innerHTML = "";
-    for (const t of pc) {
-      const destino = t.para_caixa ? " → caixa" : "";
-      const li = document.createElement("li");
-      li.innerHTML = `<span>${t.pagador}${destino} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
-        + `<span><button type="button" class="ligacao" data-confirmar="${t.id}">✓</button> `
-        + `<button type="button" class="ligacao" data-recusar="${t.id}">Não recebi</button></span>`;
-      ul.appendChild(li);
-    }
-    $("por-confirmar").hidden = false;
-  } else {
-    $("por-confirmar").hidden = true;
-  }
+  renderPendingConfirmations($("por-confirmar"), $("por-confirmar-titulo"), $("por-confirmar-lista"));
+  // Also redraws the Escritório block, not just desenharEscritorio(): every
+  // recarregarEu() call site is what actually changes eu.por_confirmar (a
+  // pagamentos-lista confirm, a keeper change in Definições, ...), and most
+  // of them never call carregarEscritorio() afterwards, or call it before
+  // recarregarEu(). Rendering here too means the block is never stale
+  // regardless of call order, even while the Escritório tab is not visible.
+  renderPendingConfirmations($("office-pending-confirmations"), $("office-pending-confirmations-title"), $("office-pending-confirmations-list"));
 
   const s = $("stock");
-  s.className = "faixa" + (eu.stock.baixo ? " baixo" : "");
+  s.className = stockBannerClass(eu.stock);
   s.innerHTML = textoStock(eu.stock);
 }
 
@@ -742,7 +836,7 @@ function escolherChip(valorCent) {
   for (const b of $("pagar-chips").querySelectorAll("button")) {
     b.classList.toggle("selecionada", Number(b.dataset.valor) === valorCent);
   }
-  $("pagar-livre").value = (valorCent / 100).toFixed(2);
+  $("pagar-livre").value = centsToText(valorCent);
 }
 
 // Fetched fresh every time the form opens (never the login screen's global
@@ -799,7 +893,7 @@ $("pagar-cancelar").onclick = () => {
 $("form-pagar").onsubmit = async (e) => {
   e.preventDefault();
   const valorCent = lerValorCent($("pagar-livre"));
-  if (valorCent === null) return toast("Mete um valor entre 0,01 € e 1000 €.", true);
+  if (valorCent === null) return toast("Valor inválido: mete um valor entre 0,01 € e 1000 €, ex.: 25,00.", true);
   const destino = $("pagar-recebedor").value;
   if (!destino) return toast("Escolhe a quem pagar.", true);
   const paraCaixa = destino === "caixa";
@@ -823,15 +917,33 @@ $("form-pagar").onsubmit = async (e) => {
   }
 };
 
-// "por confirmar" ✓ / Não recebi, shown right on the Café card.
+// "por confirmar" ✓ Recebi / Não recebi, shared by the Café card's own list
+// and the Escritório one at the top of that tab.
+async function confirmOrDeclinePayment(b) {
+  const id = b.dataset.confirmar || b.dataset.recusar;
+  await api("POST", `/transferencias/${id}/${b.dataset.confirmar ? "confirmar" : "anular"}`);
+  toast("Pagamento actualizado.");
+}
+
 $("por-confirmar-lista").onclick = async (ev) => {
   const b = ev.target.closest("button[data-confirmar],button[data-recusar]");
   if (!b) return;
-  const id = b.dataset.confirmar || b.dataset.recusar;
   try {
-    await api("POST", `/transferencias/${id}/${b.dataset.confirmar ? "confirmar" : "anular"}`);
-    toast("Pagamento actualizado.");
+    await confirmOrDeclinePayment(b);
     await recarregarEu();
+  } catch (erro) { toast(erro.message, true); }
+};
+
+// The Escritório block also needs the table and the caixa line refreshed
+// afterwards ("Não recebi" moves caixa.dinheiro_cent when the pending
+// payment was to the caixa), so it reloads the whole tab, not just eu.
+$("office-pending-confirmations-list").onclick = async (ev) => {
+  const b = ev.target.closest("button[data-confirmar],button[data-recusar]");
+  if (!b) return;
+  try {
+    await confirmOrDeclinePayment(b);
+    await recarregarEu();
+    await carregarEscritorio(escritorio.mes);
   } catch (erro) { toast(erro.message, true); }
 };
 
@@ -1060,7 +1172,7 @@ function desenharDinheiro() {
         if (!t.confirmada_em) {
           if (t.sentido === "paguei") botoes.push(`<button type="button" class="ligacao" data-mov-anular="${t.id}">Anular</button>`);
           else {
-            botoes.push(`<button type="button" class="ligacao" data-mov-confirmar="${t.id}">✓</button>`);
+            botoes.push(`<button type="button" class="ligacao" data-mov-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.outro}">✓ Recebi</button>`);
             botoes.push(`<button type="button" class="ligacao" data-mov-anular="${t.id}">Não recebi</button>`);
           }
         }
@@ -1068,7 +1180,7 @@ function desenharDinheiro() {
         if (t.sentido === "paguei") botoes.push(`<button type="button" class="ligacao" data-mov-editar="${t.id}">Editar</button>`);
       }
       const editado = t.editada ? ` <button type="button" class="ligacao" data-mov-historico="${t.id}">editado</button>` : "";
-      li.innerHTML = `<span>${texto} · ${dataCurta(t.em)}${editado}</span><span>${botoes.join(" ")}</span>`
+      li.innerHTML = `<span>${texto} · ${dataCurta(t.em)}${editado}</span><span class="actions">${botoes.join(" ")}</span>`
         + `<div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul>`;
     }
     ul.appendChild(li);
@@ -1161,8 +1273,44 @@ function saldoCurto(cent) {
   return (cent < 0 ? "-" : "+") + euros(Math.abs(cent));
 }
 
+// Label for #esc-caixa's first cell (design review: "Na caixa" / "A caixa
+// deve a Ana", amount shown separately, bold, in the cell's own <b>). A
+// negative dinheiro_cent means the caixa owes money to its keeper, never
+// the other way round, and must never render as a negative amount, hence
+// "a caixa deve" instead of letting the sign show through.
+function fraseDinheiroCaixa(c) {
+  return c.dinheiro_cent < 0 ? `a caixa deve a ${c.responsavel}` : "na caixa";
+}
+
+// Capitalises a lowercase sentence-fragment for use as a standalone label
+// (fraseDinheiroCaixa's own text is lowercase because it also used to sit
+// mid-sentence; #esc-caixa's cells are not a sentence).
+function capitalize(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// "Paga com" da entrada de cápsulas: por omissão é "caixa" quando quem está
+// autenticado é o próprio guarda da caixa, senão "bolso" (spec: pergunta 2).
+function pagaComPadrao(e) {
+  return e && e.caixa && e.caixa.responsavel_id === e.eu ? "caixa" : "bolso";
+}
+
+function pagaComAtual(container) {
+  const btn = container.querySelector('.segment[aria-pressed="true"]');
+  return btn ? btn.dataset.payWith : "bolso";
+}
+
+function definirPagaCom(container, valor, custoInput) {
+  for (const btn of container.querySelectorAll(".segment")) {
+    btn.setAttribute("aria-pressed", String(btn.dataset.payWith === valor));
+  }
+  if (valor === "oferta") { custoInput.value = "0,00"; custoInput.disabled = true; }
+  else { custoInput.disabled = false; if (custoInput.value === "0,00") custoInput.value = ""; }
+}
+
 function desenharEscritorio() {
   const e = escritorio;
+  renderPendingConfirmations($("office-pending-confirmations"), $("office-pending-confirmations-title"), $("office-pending-confirmations-list"));
   const sel = $("sel-mes");
   sel.innerHTML = "";
   for (const m of e.meses) {
@@ -1172,11 +1320,25 @@ function desenharEscritorio() {
   }
   sel.value = e.mes;
   $("esc-total").textContent = `${plural(e.total_cafes, "cápsula", "cápsulas")} · ${euros(e.total_cent)}`;
-  // "Caixa com Ana: 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €",
-  // ou o aviso sem responsável (spec 5.3).
-  $("esc-caixa").textContent = (!e.caixa || e.caixa.responsavel_id == null)
-    ? "Ninguém guarda a caixa. Escolhe nas Definições."
-    : `Caixa com ${e.caixa.responsavel}: ${euros(e.caixa.dinheiro_cent)} em dinheiro · ${euros(e.caixa.por_receber_cent)} por receber · fundo ${euros(e.caixa.fundo_cent)}`;
+  // Three-cell row (design review: replaces the run-on sentence "Caixa com
+  // Ana: 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €"), or the
+  // no-keeper notice (spec 5.3, unchanged behaviour). A negative
+  // dinheiro_cent means the caixa owes money to its keeper (eg. they paid
+  // for capsules out of pocket beyond what was owed), so the first cell
+  // must never show a negative amount.
+  const cashboxEl = $("esc-caixa");
+  if (!e.caixa || e.caixa.responsavel_id == null) {
+    cashboxEl.className = "nota";
+    cashboxEl.textContent = "Ninguém guarda a caixa. Escolhe nas Definições.";
+  } else {
+    cashboxEl.className = "cashbox-summary";
+    cashboxEl.innerHTML = `<p class="cashbox-title">Caixa com ${e.caixa.responsavel}</p>`
+      + `<div class="cashbox-cells">`
+      + `<div class="cashbox-cell"><span>${capitalize(fraseDinheiroCaixa(e.caixa))}</span><b>${euros(Math.abs(e.caixa.dinheiro_cent))}</b></div>`
+      + `<div class="cashbox-cell"><span>Por receber</span><b>${euros(e.caixa.por_receber_cent)}</b></div>`
+      + `<div class="cashbox-cell"><span>Fundo</span><b>${euros(e.caixa.fundo_cent)}</b><small class="nota">sobra depois de pagar as cápsulas</small></div>`
+      + `</div>`;
+  }
 
   const souGuarda = e.caixa && e.caixa.responsavel_id === e.eu;
   const tb = $("tabela").querySelector("tbody");
@@ -1193,14 +1355,26 @@ function desenharEscritorio() {
   }
 
   const s = $("esc-stock");
-  s.className = "faixa" + (e.stock.baixo ? " baixo" : "");
+  s.className = stockBannerClass(e.stock);
   s.innerHTML = textoStock(e.stock);
 
-  $("compra-paga-com").querySelector('option[value="caixa"]').disabled = !e.caixa || e.caixa.responsavel_id == null;
-  if ($("compra-paga-com").value === "caixa" && $("compra-paga-com").querySelector('option[value="caixa"]').disabled) {
-    $("compra-paga-com").value = "bolso";
+  // Caixa is only an option for whoever guards it (the server rejects
+  // anyone else); hidden, not disabled, so the other two segments fill the
+  // row (spec 7d, .segmented-two).
+  const payWithContainer = $("compra-paga-com");
+  const pagaComCaixa = payWithContainer.querySelector('.segment[data-pay-with="caixa"]');
+  pagaComCaixa.hidden = !souGuarda;
+  payWithContainer.classList.toggle("segmented-two", !souGuarda);
+  if (compraPagaComUtilizador !== e.eu) {
+    // primeira vez que este utilizador vê o formulário nesta sessão: aplica
+    // a omissão (caixa se for o guarda, bolso senão).
+    definirPagaCom($("compra-paga-com"), pagaComPadrao(e), $("compra-custo"));
+    compraPagaComUtilizador = e.eu;
+  } else if (pagaComAtual($("compra-paga-com")) === "caixa" && !souGuarda) {
+    definirPagaCom($("compra-paga-com"), "bolso", $("compra-custo"));
   }
 
+  $("purchases-title").hidden = !e.compras.length;
   const ul = $("compras");
   ul.innerHTML = "";
   for (const c of e.compras) {
@@ -1213,7 +1387,7 @@ function desenharEscritorio() {
     const estimado = c.custo_estimado ? ' <span class="nota">custo estimado</span>' : "";
     const editado = c.editada ? ` <button type="button" class="ligacao" data-historico-compra="${c.id}">editado</button>` : "";
     li.innerHTML = `<span>+${c.capsulas} · ${euros(c.custo_cent)} · ${origem} · ${dataCurta(c.em)}`
-      + `${c.nota ? " · " + c.nota : ""}${estimado}${editado}</span><span>${acoes.join(" ")}</span>`
+      + `${c.nota ? " · " + c.nota : ""}${estimado}${editado}</span><span class="actions">${acoes.join(" ")}</span>`
       + `<div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul>`;
     ul.appendChild(li);
   }
@@ -1231,12 +1405,12 @@ function linhaPagamento(t) {
   const souRecebedor = (t.para_caixa && eu && eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id)
     || (eu && t.recebedor_id === eu.utilizador.id);
   const botoes = [];
-  if (t.pode_confirmar) botoes.push(`<button type="button" class="ligacao" data-pg-confirmar="${t.id}">✓</button>`);
+  if (t.pode_confirmar) botoes.push(`<button type="button" class="ligacao" data-pg-confirmar="${t.id}" aria-label="Recebi o pagamento de ${t.pagador}">✓ Recebi</button>`);
   if (t.pode_anular) botoes.push(`<button type="button" class="ligacao" data-pg-anular="${t.id}">${souRecebedor ? "Não recebi" : "Anular"}</button>`);
   if (t.pode_editar) botoes.push(`<button type="button" class="ligacao" data-pg-editar="${t.id}">Editar</button>`);
   const editado = t.editada ? ` <button type="button" class="ligacao" data-pg-historico="${t.id}">editado</button>` : "";
   return `<li data-id="${t.id}"><span>${t.pagador} → ${t.recebedor} · ${euros(t.valor_cent)} · ${dataCurta(t.em)} · ${estado}${editado}</span>`
-    + `<span>${botoes.join(" ")}</span><div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul></li>`;
+    + `<span class="actions">${botoes.join(" ")}</span><div class="fp-inline" hidden></div><ul class="historico-lista" hidden></ul></li>`;
 }
 
 function desenharPagamentos() {
@@ -1278,7 +1452,7 @@ async function carregarConfig() {
       sel.appendChild(op);
     }
     sel.value = config.caixa_responsavel_id != null ? String(config.caixa_responsavel_id) : "";
-    $("cfg-preco").value = (config.preco_cent / 100).toFixed(2);
+    $("cfg-preco").value = centsToText(config.preco_cent);
     $("cfg-limiar").value = config.stock_baixo;
   } catch (erro) {
     config = null;
@@ -1414,43 +1588,44 @@ function abrirEdicaoCompra(li, c) {
   const container = li.querySelector(".fp-inline");
   const pagaComInicial = c.custo_cent === 0 ? "oferta" : c.paga_pela_caixa ? "caixa" : "bolso";
   const pagaComOpcoes = [];
-  // "Caixa" fica na lista se há responsável hoje, ou se esta compra já foi
-  // paga pela caixa dantes (responsável entretanto removido): sem isto, o
-  // select cairia na primeira opção e Guardar mudaria "paga com" sem ninguém
-  // ter pedido.
-  if ((eu && eu.caixa) || pagaComInicial === "caixa") pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
+  // "Caixa" stays in the list when whoever is logged in is the keeper today
+  // (spec 7d: the server rejects anyone else), or when this purchase was
+  // already paid by the caixa before (keeper since changed or removed):
+  // without this, the select would fall back to the first option and
+  // Guardar would change "paga com" without anyone asking for that.
+  if ((eu && eu.caixa && eu.caixa.responsavel_id === eu.utilizador.id) || pagaComInicial === "caixa") {
+    pagaComOpcoes.push({ value: "caixa", label: "Caixa" });
+  }
   pagaComOpcoes.push({ value: "bolso", label: "Do meu bolso" }, { value: "oferta", label: "Oferta" });
-  container.innerHTML = `<form class="linha">
-    <label>Cápsulas <input type="number" min="1" max="10000" class="ec-capsulas" required></label>
-    <label>Custo (€) <input type="number" step="0.01" min="0" max="10000" class="ec-custo" required></label>
-    <label>Paga com <select class="ec-paga-com"></select></label>
-    <button type="submit">Guardar</button>
-    <button type="button" class="ligacao ec-cancelar">Cancelar</button>
+  const segmentosHTML = pagaComOpcoes.map((o) => `<button type="button" class="segment" data-pay-with="${o.value}" aria-pressed="${o.value === pagaComInicial}">${o.label}</button>`).join("");
+  container.innerHTML = `<form class="purchase-form purchase-form-compact">
+    <label class="field"><span>Cápsulas</span><input type="number" min="1" max="10000" class="ec-capsulas" required></label>
+    <label class="field"><span>Custo (€)</span><input type="text" inputmode="decimal" autocomplete="off" class="ec-custo" required></label>
+    <div class="field field-full"><span>Paga com</span><div class="segmented ec-paga-com" role="group" aria-label="Paga com">${segmentosHTML}</div></div>
+    <div class="field-full edit-actions">
+      <button type="submit">Guardar</button>
+      <button type="button" class="ligacao ec-cancelar">Cancelar</button>
+    </div>
   </form>`;
   const form = container.querySelector("form");
   const capsulasInput = form.querySelector(".ec-capsulas");
   const custoInput = form.querySelector(".ec-custo");
   const sel = form.querySelector(".ec-paga-com");
   capsulasInput.value = c.capsulas;
-  custoInput.value = (c.custo_cent / 100).toFixed(2);
-  for (const o of pagaComOpcoes) {
-    const op = document.createElement("option");
-    op.value = o.value; op.textContent = o.label;
-    sel.appendChild(op);
-  }
-  sel.value = pagaComInicial;
+  custoInput.value = centsToText(c.custo_cent);
   custoInput.disabled = pagaComInicial === "oferta";
-  sel.onchange = () => {
-    if (sel.value === "oferta") { custoInput.value = "0.00"; custoInput.disabled = true; }
-    else { custoInput.disabled = false; if (custoInput.value === "0.00") custoInput.value = ""; }
+  sel.onclick = (ev) => {
+    const btn = ev.target.closest(".segment");
+    if (!btn) return;
+    definirPagaCom(sel, btn.dataset.payWith, custoInput);
   };
   form.querySelector(".ec-cancelar").onclick = () => { container.hidden = true; container.innerHTML = ""; };
   form.onsubmit = async (e) => {
     e.preventDefault();
     const capsulas = Number(capsulasInput.value);
-    const pagaCom = sel.value;
-    const custoCent = pagaCom === "oferta" ? 0 : Math.round(Number(custoInput.value.replace(",", ".")) * 100);
-    if (pagaCom !== "oferta" && !(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
+    const pagaCom = pagaComAtual(sel);
+    const custoCent = pagaCom === "oferta" ? 0 : parseAmountCents(custoInput.value, 1, 1000000);
+    if (pagaCom !== "oferta" && custoCent === null) return toast("Valor inválido: mete um custo entre 0,01 € e 10000 €, ex.: 25,00.", true);
     const corpo = {};
     if (capsulas !== c.capsulas) corpo.capsulas = capsulas;
     if (custoCent !== c.custo_cent) corpo.custo_cent = custoCent;
@@ -1466,17 +1641,17 @@ function abrirEdicaoCompra(li, c) {
   container.hidden = false;
 }
 
-$("compra-paga-com").onchange = () => {
-  const custo = $("compra-custo");
-  if ($("compra-paga-com").value === "oferta") { custo.value = "0.00"; custo.disabled = true; }
-  else { custo.disabled = false; if (custo.value === "0.00") custo.value = ""; }
+$("compra-paga-com").onclick = (ev) => {
+  const btn = ev.target.closest(".segment");
+  if (!btn) return;
+  definirPagaCom($("compra-paga-com"), btn.dataset.payWith, $("compra-custo"));
 };
 
 $("form-compra").onsubmit = async (e) => {
   e.preventDefault();
-  const pagaCom = $("compra-paga-com").value;
-  const custoCent = pagaCom === "oferta" ? 0 : Math.round(Number($("compra-custo").value.replace(",", ".")) * 100);
-  if (pagaCom !== "oferta" && !(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
+  const pagaCom = pagaComAtual($("compra-paga-com"));
+  const custoCent = pagaCom === "oferta" ? 0 : parseAmountCents($("compra-custo").value, 1, 1000000);
+  if (pagaCom !== "oferta" && custoCent === null) return toast("Valor inválido: mete um custo entre 0,01 € e 10000 €, ex.: 25,00.", true);
   try {
     await api("POST", "/compras", {
       capsulas: Number($("compra-n").value),
@@ -1485,17 +1660,17 @@ $("form-compra").onsubmit = async (e) => {
       nota: $("compra-nota").value || null,
     });
     $("form-compra").reset();
-    $("compra-paga-com").value = "bolso";
-    $("compra-custo").disabled = false;
     toast("Entrada registada.");
     await carregarEscritorio(escritorio.mes);
+    // volta sempre para a omissão de quem está autenticado, não para "bolso" fixo.
+    definirPagaCom($("compra-paga-com"), pagaComPadrao(escritorio), $("compra-custo"));
   } catch (err) { toast(err.message, true); }
 };
 
 $("form-config").onsubmit = async (e) => {
   e.preventDefault();
-  const precoCent = Math.round(Number($("cfg-preco").value.replace(",", ".")) * 100);
-  if (!(precoCent >= 1 && precoCent <= 10000)) return toast("Mete um preço entre 0,01 € e 100 €.", true);
+  const precoCent = parseAmountCents($("cfg-preco").value, 1, 10000);
+  if (precoCent === null) return toast("Valor inválido: mete um preço entre 0,01 € e 100 €, ex.: 25,00.", true);
   const respId = $("cfg-caixa-responsavel").value;
   try {
     await api("PUT", "/config", {
@@ -1527,6 +1702,10 @@ $("abas").onclick = async (ev) => {
       selecionarHistVista("cafes");
       mostrar("historico");
     } else {
+      // Best-effort: refreshes eu.por_confirmar (spec: pending confirmations
+      // first) before the tab's own snapshot logic runs; offline is not
+      // fatal here, carregarEscritorio() has its own fallback.
+      if (eu) await recarregarEu().catch((erro) => console.error("Failed to refresh the balance for Escritório:", erro));
       await carregarEscritorio();
       mostrar("escritorio");
       atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));

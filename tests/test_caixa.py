@@ -478,7 +478,7 @@ def test_alterar_capsulas_e_quem_pagou_uma_compra(cliente):
     a = regista(cliente, "Ana")
     b = regista(cliente, "Bea")
     ids = _ids(cliente)
-    _guarda(b, ids["Bea"])
+    _guarda(a, ids["Ana"])
     a.post("/api/compras", json={"capsulas": 10, "custo_cent": 250})
     compra = a.get("/api/escritorio").json()["compras"][0]["id"]
     for _ in range(4):

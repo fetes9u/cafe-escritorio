@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Café do escritório</title>
-<link rel="stylesheet" href="/static/style.css?v=8">
+<link rel="stylesheet" href="/static/style.css?v=9">
 <link rel="manifest" href="/static/manifest.json">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png">
@@ -78,15 +78,15 @@
       <div class="linha"><b id="saldo-frase"></b><span id="caixa-contigo" class="nota" hidden></span></div>
       <p id="saldo-sugestao" class="nota" hidden></p>
       <button type="button" id="btn-pagar">Paguei por MB WAY</button>
-      <div id="por-confirmar" hidden>
-        <p id="por-confirmar-titulo" class="nota"></p>
-        <ul id="por-confirmar-lista"></ul>
+      <div id="por-confirmar" class="pending-confirmations" hidden>
+        <p id="por-confirmar-titulo" class="nota pending-confirmations-title"></p>
+        <ul id="por-confirmar-lista" class="pending-confirmations-list"></ul>
       </div>
     </div>
     <form id="form-pagar" hidden>
       <div id="pagar-chips" class="grelha-chips"></div>
       <div class="linha">
-        <label>Outro valor (€) <input id="pagar-livre" type="number" step="0.01" min="0.01" max="1000"></label>
+        <label>Outro valor (€) <input id="pagar-livre" type="text" inputmode="decimal" autocomplete="off"></label>
         <label>A quem <select id="pagar-recebedor" required></select></label>
       </div>
       <button type="submit">Guardar</button>
@@ -130,14 +130,18 @@
 <!-- ESCRITÓRIO -->
 <section id="vista-escritorio" hidden>
   <p id="esc-fotografia-aviso" class="nota aviso-fotografia" hidden></p>
-  <div class="linha">
+  <div id="office-pending-confirmations" class="pending-confirmations cartao" hidden>
+    <p id="office-pending-confirmations-title" class="nota pending-confirmations-title"></p>
+    <ul id="office-pending-confirmations-list" class="pending-confirmations-list"></ul>
+  </div>
+  <div class="linha month-row">
     <label>Mês <select id="sel-mes"></select></label>
     <b id="esc-total"></b>
   </div>
-  <p id="esc-caixa" class="nota"></p>
+  <div id="esc-caixa"></div>
 
   <table id="tabela">
-    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">€ do mês</th><th class="num">Saldo</th></tr></thead>
+    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">Este mês</th><th class="num">Saldo total</th></tr></thead>
     <tbody></tbody>
   </table>
 
@@ -151,19 +155,24 @@
 
   <details class="cartao" open>
     <summary>Entradas de cápsulas</summary>
-    <form id="form-compra" class="linha">
-      <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="cápsulas" required>
-      <input id="compra-custo" type="number" step="0.01" min="0.01" max="10000" placeholder="custo (€)" required>
-      <label>Paga com
-        <select id="compra-paga-com">
-          <option value="caixa">Caixa</option>
-          <option value="bolso" selected>Do meu bolso</option>
-          <option value="oferta">Oferta</option>
-        </select>
-      </label>
-      <input id="compra-nota" maxlength="80" placeholder="nota (opcional)">
-      <button type="submit">Registar entrada</button>
+    <form id="form-compra" class="purchase-form">
+      <label class="field"><span>Cápsulas</span>
+        <input id="compra-n" type="number" inputmode="numeric" min="1" max="10000" placeholder="Ex.: 100" required></label>
+      <label class="field"><span>Custo (€)</span>
+        <input id="compra-custo" type="text" inputmode="decimal" autocomplete="off" placeholder="Ex.: 25,00" required></label>
+      <div class="field field-full">
+        <span>Paga com</span>
+        <div id="compra-paga-com" class="segmented" role="group" aria-label="Paga com">
+          <button type="button" class="segment" data-pay-with="caixa" aria-pressed="false">Caixa</button>
+          <button type="button" class="segment" data-pay-with="bolso" aria-pressed="true">Do meu bolso</button>
+          <button type="button" class="segment" data-pay-with="oferta" aria-pressed="false">Oferta</button>
+        </div>
+      </div>
+      <label class="field field-full"><span>Nota (opcional)</span>
+        <input id="compra-nota" maxlength="80" placeholder="Ex.: reposição mensal"></label>
+      <button type="submit" class="field-full">Registar entrada</button>
     </form>
+    <h3 id="purchases-title" class="subheading" hidden>Registos recentes</h3>
     <ul id="compras"></ul>
   </details>
 
@@ -171,7 +180,7 @@
     <summary>Definições</summary>
     <p id="cfg-aviso" class="nota aviso-fotografia" hidden></p>
     <form id="form-config" class="linha">
-      <label>Preço por café (€) <input id="cfg-preco" type="number" step="0.01" min="0.01" max="100" required></label>
+      <label>Preço por café (€) <input id="cfg-preco" type="text" inputmode="decimal" autocomplete="off" required></label>
       <label>Aviso de stock baixo (cápsulas) <input id="cfg-limiar" type="number" min="0" required></label>
       <label>Quem guarda a caixa <select id="cfg-caixa-responsavel"></select></label>
       <button type="submit">Guardar</button>
@@ -180,7 +189,7 @@
     <ul id="cfg-historico-lista" class="historico-lista" hidden></ul>
   </details>
 
-  <details class="cartao" id="notif-secao" open>
+  <details class="cartao" id="notif-secao">
     <summary>Notificações</summary>
     <p id="notif-estado" class="nota"></p>
     <p id="notif-ios-aviso" class="nota" hidden>No iPhone, as notificações só funcionam com a app instalada no ecrã principal: toca em Partilhar e depois em «Adicionar ao ecrã principal».</p>
@@ -207,6 +216,6 @@
   <button type="button" id="instalar-fechar" class="ligacao">Dispensar</button>
 </div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

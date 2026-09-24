@@ -5,13 +5,13 @@
    API response could show one person the data of another. */
 "use strict";
 
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9";
 const CACHE_NAME = "cafe-shell-" + CACHE_VERSION;
 
 const SHELL_URLS = [
   "/",
-  "/static/style.css?v=8",
-  "/static/app.js?v=8",
+  "/static/style.css?v=9",
+  "/static/app.js?v=9",
   "/static/manifest.json",
   "/static/icon.svg",
   "/static/icons/icon-180.png",

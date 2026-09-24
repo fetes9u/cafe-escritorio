@@ -5,7 +5,9 @@
   --texto: #2b2320;
   --cinza: #7a716c;
   --linha: #e6dcd2;
-  --ok: #2f7d4a;
+  /* darkened from #2f7d4a: that one measured 4.36:1 on --ok-fundo, under the
+     4.5:1 floor for normal text; #1a5f33 measures 6.64:1 on the same background. */
+  --ok: #1a5f33;
   --aviso-fundo: #fbe4e1;
   --aviso: #a3261b;
   --ok-fundo: #e3f2e7;
@@ -27,7 +29,7 @@ main { max-width: 520px; margin: 0 auto; padding: 16px; padding-bottom: max(24px
 .grelha button:active { background: var(--linha); }
 
 button { font: inherit; cursor: pointer; }
-button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia):not(.chip) {
+button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia):not(.chip):not(.segment) {
   background: var(--cafe); color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; }
 button:disabled { opacity: .5; }
 .secundario { display: block; width: 100%; margin-top: 16px; padding: 12px; background: transparent; color: var(--cafe); border: 1px dashed var(--cafe-claro); border-radius: 12px; }
@@ -36,7 +38,16 @@ button:disabled { opacity: .5; }
   box-shadow: 0 4px 0 #3e2619; margin-bottom: 14px; }
 .grande:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 2px 0 #3e2619; }
 
-input, select { font: inherit; padding: 10px; border: 1px solid var(--linha); border-radius: 8px; background: #fff; width: 100%; }
+/* explicit floor, not just "font: inherit": iOS Safari zooms the page on
+   focus for any text input under 16px, so this has to hold even inside a
+   nested context with a smaller inherited font. */
+input, select, textarea { font: inherit; font-size: max(16px, 1rem); padding: 10px; border: 1px solid var(--linha); border-radius: 8px; background: #fff; width: 100%; }
+/* Locked look for a disabled input (the cost under Oferta): iOS Safari
+   otherwise draws it with its own faint opacity and ignores a plain
+   `color`, so both are set explicitly. */
+input:disabled, select:disabled, textarea:disabled {
+  background: var(--linha); color: var(--cinza); opacity: 1; -webkit-text-fill-color: var(--cinza);
+}
 label { display: block; margin: 10px 0; }
 label > input, label > select { margin-top: 4px; }
 .pin { font-size: 2rem; letter-spacing: .6em; text-align: center; padding: 14px; }
@@ -46,11 +57,30 @@ form .ligacao { margin-top: 10px; }
 .cartao { background: #fff; border: 1px solid var(--linha); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
 .linha { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
 .linha label { flex: 1; margin: 0; }
+.month-row label { flex: 1 1 11rem; }
 .nota { color: var(--cinza); font-size: .9rem; }
 .faixa { padding: 12px 14px; border-radius: 12px; background: var(--ok-fundo); color: var(--ok); margin: 12px 0; }
 .faixa.baixo { background: var(--aviso-fundo); color: var(--aviso); font-weight: 600; }
-.faixa small { display: block; font-weight: 400; opacity: .85; }
+/* .faixa.warning: same warning colours as .baixo but normal weight, for
+   "chega ao fim do mês? não" on its own (stock itself is not low yet). */
+.faixa.warning { background: var(--aviso-fundo); color: var(--aviso); }
+/* no opacity here: it was dropping the small text under the 4.5:1 contrast
+   floor on both the ok and the warning background. */
+.faixa small { display: block; font-weight: 400; }
 .rodape { text-align: center; margin-top: 24px; color: var(--cinza); }
+
+/* #esc-caixa: three-cell "Caixa com <nome>" summary (spec 4 dos revisores),
+   fits 360px by letting each cell wrap its label instead of forcing
+   nowrap; the amount is the only part that must stay on one line. Own
+   margin because it is a div now (no keeper text used to be a <p>, which
+   had it for free from the UA stylesheet). */
+#esc-caixa { margin: 12px 0; }
+.cashbox-title { margin: 0 0 6px; font-weight: 600; }
+.cashbox-cells { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cashbox-cell { min-width: 0; }
+.cashbox-cell span { display: block; font-size: .8rem; color: var(--cinza); }
+.cashbox-cell b { display: block; font-size: 1.05rem; white-space: nowrap; }
+.cashbox-cell small { display: block; margin-top: 2px; font-size: .75rem; line-height: 1.3; }
 
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; margin-top: 10px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--linha); font-size: .95rem; }
@@ -61,8 +91,34 @@ th { color: var(--cinza); font-weight: 500; }
 details summary { font-weight: 600; cursor: pointer; }
 ul { list-style: none; padding: 0; margin: 8px 0 0; }
 li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--linha); font-size: .95rem; }
-#form-compra input { flex: 1; min-width: 90px; }
 #form-config { flex-direction: column; align-items: stretch; }
+
+/* entradas de cápsulas: form-compra (create) and the inline compra edit
+   (purchase-form-compact), both laid out as a 2-column grid so nothing
+   overflows or wraps raggedly from 360 to 440px wide. */
+.purchase-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; align-items: start; }
+.purchase-form .field { display: flex; flex-direction: column; gap: 4px; margin: 0; min-width: 0; }
+.purchase-form .field > span { font-size: .85rem; font-weight: 600; color: var(--cinza); }
+.purchase-form .field-full { grid-column: 1 / -1; }
+.purchase-form input, .purchase-form select { min-width: 0; }
+/* Small section heading above a list (eg. #compras' "Registos recentes"),
+   same weight/size/colour as a purchase-form field label. */
+.subheading { font-size: .85rem; font-weight: 600; color: var(--cinza); margin: 14px 0 4px; }
+.purchase-form .field > input, .purchase-form .field > select { margin-top: 0; }
+.purchase-form > button[type="submit"] { grid-column: 1 / -1; }
+.purchase-form-compact .edit-actions { display: flex; gap: 14px; align-items: center; }
+
+/* "Paga com" segmented control: three equal buttons instead of a select,
+   so the label is always fully visible on a narrow phone screen. */
+.segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+/* .segmented-two: the create form's control when Caixa is hidden (only the
+   keeper sees it), two segments filling the row instead of leaving a gap
+   where the third used to be. */
+.segmented.segmented-two { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 1fr; }
+.segment { min-width: 0; padding: 10px 4px; font-size: .9rem; text-align: center;
+  border: 1px solid var(--linha); border-radius: 8px; background: #fff; color: var(--texto);
+  display: flex; align-items: center; justify-content: center; min-height: 44px; }
+.segment[aria-pressed="true"] { background: var(--cafe); color: #fff; border-color: var(--cafe); }
 
 /* saldo e pagamentos por MB WAY */
 #btn-pagar { display: block; width: 100%; }
@@ -76,16 +132,27 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 /* "Outro valor" and "A quem" side by side even though each wraps a full-width input/select */
 #form-pagar .linha { flex-wrap: nowrap; }
 #form-pagar .linha label { min-width: 0; }
-#por-confirmar { margin-top: 8px; }
-#por-confirmar-titulo { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
-#por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* Inline action links inside a list row (Café "por confirmar", Escritório
+   pagamentos/compras, Histórico dinheiro): padded to a real >= 32px tap
+   target with a matching negative margin so the row barely grows. `li >
+   span` (never `li > div.fp-inline`) is what keeps this off the inline edit
+   forms' own Cancelar/Guardar, which live in a div, not a span. */
+li > span .ligacao { padding: 8px 6px; margin: -8px -6px; }
+/* .actions: the span wrapping a row's action buttons, spaced apart instead
+   of sitting glued together with only the join(" ")'s single space between. */
+.actions { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* .pending-confirmations: shared by the Café card's own #por-confirmar block
+   and the compact #office-pending-confirmations block at the top of the
+   Escritório tab (spec: pending confirmations first), so both look the same
+   instead of the styling living on one #id only. */
+.pending-confirmations { margin-top: 8px; }
+.pending-confirmations-title { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
+.pending-confirmations-list li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 /* keeper card fit (spec 5.1: cabe em 812 sem scroll com 2 pendentes): tighter
-   row padding and line-height than the base li/ul rules. The buttons keep a
-   >= 32px tap target with padding balanced by an equal negative margin, so
-   the extra hit area never grows the row itself. */
-#por-confirmar-lista { margin-top: 2px; }
-#por-confirmar-lista li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
-#por-confirmar-lista .ligacao { padding: 8px 4px; margin: -8px -4px; }
+   row padding and line-height than the base li/ul rules. The tap target
+   itself is the shared `li > span .ligacao` rule above. */
+.pending-confirmations-list { margin-top: 2px; }
+.pending-confirmations-list li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
 #dinheiro-lista li { flex-wrap: wrap; }
 /* > (not a descendant selector) so this only ever hits the movement text, never the nested span.nota inside the actions span */
 li.anulada > span:first-child { text-decoration: line-through; color: var(--cinza); }
@@ -145,8 +212,12 @@ body.com-faixa-instalar main { padding-bottom: calc(64px + env(safe-area-inset-b
    never fight the row's own flex layout for space */
 #dinheiro-lista li, #pagamentos-lista li, #compras li { flex-wrap: wrap; }
 .fp-inline:not([hidden]) { flex-basis: 100%; margin-top: 8px; }
-.fp-inline form { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; width: 100%; }
-.fp-inline form input, .fp-inline form select { flex: 1; min-width: 90px; }
+/* :not(.purchase-form) so the compra edit form (a grid, styled above) keeps
+   its own layout instead of this generic flex-wrap one used by the
+   pagamento inline edit and the reembolso row. */
+.fp-inline form:not(.purchase-form) { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; width: 100%; }
+.fp-inline form:not(.purchase-form) input, .fp-inline form:not(.purchase-form) select { flex: 1; min-width: 90px; }
+.fp-inline .purchase-form { width: 100%; }
 .historico-lista { flex-basis: 100%; margin: 6px 0 0; padding: 0; list-style: none; }
 .historico-lista li { border-top: 1px dashed var(--linha); font-size: .85rem; padding: 4px 0; }
 
@@ -156,5 +227,3 @@ body.com-faixa-instalar main { padding-bottom: calc(64px + env(safe-area-inset-b
    side would overflow the table at 375px. */
 .linha-reembolso td { padding: 8px 0; background: var(--creme); }
 .btn-reembolsar { display: block; margin-top: 2px; white-space: nowrap; }
-
-#form-compra select { flex: 1; min-width: 110px; }

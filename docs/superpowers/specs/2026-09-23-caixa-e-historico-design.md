@@ -248,12 +248,16 @@ calculados na mesma.
 
 - `POST /api/compras`: `{"capsulas", "custo_cent" (0..1000000; 0 = oferta),
   "paga_pela_caixa": false, "nota"}`. Com `custo_cent = 0`, `paga_pela_caixa` grava
-  sempre 0.
+  sempre 0. Com `paga_pela_caixa = true` e `custo_cent > 0`, 403 se quem pede não for
+  quem guarda a caixa (com MB WAY o dinheiro fica na conta dessa pessoa).
 - `PATCH /api/compras/{id}`: qualquer subconjunto de `{"custo_cent", "capsulas",
   "paga_pela_caixa"}`, com `custo_cent` em **0..1000000, como no POST** (0 torna a
   compra numa oferta e força `paga_pela_caixa = 0`). Quem: quem registou, ou toda a
   gente se não tiver autor. 409 se `capsulas` deixar o stock negativo. Histórico por
-  campo. Põe `custo_estimado = 0` quando muda o custo.
+  campo. Põe `custo_estimado = 0` quando muda o custo. Trocar `paga_pela_caixa` de
+  falso para verdadeiro tem a mesma regra do POST (403 se quem pede não guarda a
+  caixa); uma compra já paga pela caixa continua editável nos outros campos por quem
+  a pode editar hoje, mesmo sem guardar a caixa.
 - `GET /api/preco/simular`: **sai** (404).
 
 ### 4.10 `PUT /api/config` (muda)

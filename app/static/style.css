@@ -62,6 +62,19 @@ form .ligacao { margin-top: 10px; }
 .faixa small { display: block; font-weight: 400; }
 .rodape { text-align: center; margin-top: 24px; color: var(--cinza); }
 
+/* #esc-caixa: three-cell "Caixa com <nome>" summary (spec 4 dos revisores),
+   fits 360px by letting each cell wrap its label instead of forcing
+   nowrap; the amount is the only part that must stay on one line. Own
+   margin because it is a div now (no keeper text used to be a <p>, which
+   had it for free from the UA stylesheet). */
+#esc-caixa { margin: 12px 0; }
+.caixa-titulo { margin: 0 0 6px; font-weight: 600; }
+.caixa-celulas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.caixa-celula { min-width: 0; }
+.caixa-celula span { display: block; font-size: .8rem; color: var(--cinza); }
+.caixa-celula b { display: block; font-size: 1.05rem; white-space: nowrap; }
+.caixa-fundo-nota { margin: 6px 0 0; }
+
 table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; margin-top: 10px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--linha); font-size: .95rem; }
 th { color: var(--cinza); font-weight: 500; }

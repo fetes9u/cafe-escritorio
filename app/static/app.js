@@ -1201,12 +1201,20 @@ function saldoCurto(cent) {
   return (cent < 0 ? "-" : "+") + euros(Math.abs(cent));
 }
 
-// dinheiro_cent negativo significa que a caixa deve dinheiro ao guarda, nunca
-// o contrário; nunca mostrar como um valor negativo.
+// Label for #esc-caixa's first cell (revisores: "Na caixa" / "A caixa deve a
+// Ana", amount shown separately, bold, in the cell's own <b>). dinheiro_cent
+// negativo significa que a caixa deve dinheiro ao guarda, nunca o contrário;
+// nunca mostrar como um valor negativo, daqui o "a caixa deve" em vez de
+// deixar o sinal aparecer.
 function fraseDinheiroCaixa(c) {
-  return c.dinheiro_cent < 0
-    ? `a caixa deve ${euros(Math.abs(c.dinheiro_cent))} a ${c.responsavel}`
-    : `${euros(c.dinheiro_cent)} em dinheiro`;
+  return c.dinheiro_cent < 0 ? `a caixa deve a ${c.responsavel}` : "na caixa";
+}
+
+// Capitalises a lowercase sentence-fragment for use as a standalone label
+// (fraseDinheiroCaixa's own text is lowercase because it also used to sit
+// mid-sentence; #esc-caixa's cells are not a sentence).
+function maiuscula(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // "Paga com" da entrada de cápsulas: por omissão é "caixa" quando quem está
@@ -1240,13 +1248,25 @@ function desenharEscritorio() {
   }
   sel.value = e.mes;
   $("esc-total").textContent = `${plural(e.total_cafes, "cápsula", "cápsulas")} · ${euros(e.total_cent)}`;
-  // "Caixa com Ana: 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €",
-  // ou o aviso sem responsável (spec 5.3). dinheiro_cent < 0 significa que a
-  // caixa deve dinheiro ao guarda (ex.: pagou cápsulas do bolso a mais), por
-  // isso não pode aparecer como "-2,00 € em dinheiro".
-  $("esc-caixa").textContent = (!e.caixa || e.caixa.responsavel_id == null)
-    ? "Ninguém guarda a caixa. Escolhe nas Definições."
-    : `Caixa com ${e.caixa.responsavel}: ${fraseDinheiroCaixa(e.caixa)} · ${euros(e.caixa.por_receber_cent)} por receber · fundo ${euros(e.caixa.fundo_cent)}`;
+  // Three-cell row (revisores: substitui a frase corrida "Caixa com Ana:
+  // 7,71 € em dinheiro · 18,75 € por receber · fundo 13,91 €"), ou o aviso
+  // sem responsável (spec 5.3, comportamento inalterado). dinheiro_cent < 0
+  // significa que a caixa deve dinheiro ao guarda (ex.: pagou cápsulas do
+  // bolso a mais), por isso a 1ª célula nunca mostra um valor negativo.
+  const elCaixa = $("esc-caixa");
+  if (!e.caixa || e.caixa.responsavel_id == null) {
+    elCaixa.className = "nota";
+    elCaixa.textContent = "Ninguém guarda a caixa. Escolhe nas Definições.";
+  } else {
+    elCaixa.className = "caixa-resumo";
+    elCaixa.innerHTML = `<p class="caixa-titulo">Caixa com ${e.caixa.responsavel}</p>`
+      + `<div class="caixa-celulas">`
+      + `<div class="caixa-celula"><span>${maiuscula(fraseDinheiroCaixa(e.caixa))}</span><b>${euros(Math.abs(e.caixa.dinheiro_cent))}</b></div>`
+      + `<div class="caixa-celula"><span>Por receber</span><b>${euros(e.caixa.por_receber_cent)}</b></div>`
+      + `<div class="caixa-celula"><span>Fundo</span><b>${euros(e.caixa.fundo_cent)}</b></div>`
+      + `</div>`
+      + `<p class="nota caixa-fundo-nota">sobra depois de pagar as cápsulas</p>`;
+  }
 
   const souGuarda = e.caixa && e.caixa.responsavel_id === e.eu;
   const tb = $("tabela").querySelector("tbody");

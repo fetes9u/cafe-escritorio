@@ -614,6 +614,29 @@ function textoStock(s) {
   return `${cab}<small>${acaba} · ${fim} · ritmo ${s.ritmo_dia}/dia útil</small>`;
 }
 
+// Shared by the Café card's own "por confirmar" block and the compact block
+// at the top of the Escritório tab (spec: pending confirmations first):
+// same data (eu.por_confirmar), same confirm / "Não recebi" actions. Only
+// the target elements differ, so this never duplicates the renderer.
+function desenharPorConfirmar(elBloco, elTitulo, elLista) {
+  const pc = eu.por_confirmar || [];
+  if (pc.length) {
+    elTitulo.textContent = plural(pc.length, "pagamento por confirmar", "pagamentos por confirmar");
+    elLista.innerHTML = "";
+    for (const t of pc) {
+      const destino = t.para_caixa ? " → caixa" : "";
+      const li = document.createElement("li");
+      li.innerHTML = `<span>${t.pagador}${destino} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
+        + `<span class="acoes"><button type="button" class="ligacao" data-confirmar="${t.id}" aria-label="Confirmar pagamento de ${t.pagador}">✓ Recebi</button> `
+        + `<button type="button" class="ligacao" data-recusar="${t.id}">Não recebi</button></span>`;
+      elLista.appendChild(li);
+    }
+    elBloco.hidden = false;
+  } else {
+    elBloco.hidden = true;
+  }
+}
+
 // Only fills #saldo-vista: #form-pagar is a sibling element, never touched
 // here, so a redraw triggered by sync/online events never wipes a form the
 // person has open (eg. mid-typing an amount).
@@ -644,23 +667,7 @@ function desenharEu() {
     $("btn-pagar").classList.add("discreto"); // no debt: paying ahead is still possible, just less urgent
   }
 
-  const pc = eu.por_confirmar || [];
-  if (pc.length) {
-    $("por-confirmar-titulo").textContent = plural(pc.length, "pagamento por confirmar", "pagamentos por confirmar");
-    const ul = $("por-confirmar-lista");
-    ul.innerHTML = "";
-    for (const t of pc) {
-      const destino = t.para_caixa ? " → caixa" : "";
-      const li = document.createElement("li");
-      li.innerHTML = `<span>${t.pagador}${destino} · ${euros(t.valor_cent)} · ${diaRelativo(t.em)}</span>`
-        + `<span><button type="button" class="ligacao" data-confirmar="${t.id}">✓</button> `
-        + `<button type="button" class="ligacao" data-recusar="${t.id}">Não recebi</button></span>`;
-      ul.appendChild(li);
-    }
-    $("por-confirmar").hidden = false;
-  } else {
-    $("por-confirmar").hidden = true;
-  }
+  desenharPorConfirmar($("por-confirmar"), $("por-confirmar-titulo"), $("por-confirmar-lista"));
 
   const s = $("stock");
   s.className = "faixa" + (eu.stock.baixo ? " baixo" : "");
@@ -828,15 +835,33 @@ $("form-pagar").onsubmit = async (e) => {
   }
 };
 
-// "por confirmar" ✓ / Não recebi, shown right on the Café card.
+// "por confirmar" ✓ Recebi / Não recebi, shared by the Café card's own list
+// and the Escritório one at the top of that tab.
+async function acaoPorConfirmar(b) {
+  const id = b.dataset.confirmar || b.dataset.recusar;
+  await api("POST", `/transferencias/${id}/${b.dataset.confirmar ? "confirmar" : "anular"}`);
+  toast("Pagamento actualizado.");
+}
+
 $("por-confirmar-lista").onclick = async (ev) => {
   const b = ev.target.closest("button[data-confirmar],button[data-recusar]");
   if (!b) return;
-  const id = b.dataset.confirmar || b.dataset.recusar;
   try {
-    await api("POST", `/transferencias/${id}/${b.dataset.confirmar ? "confirmar" : "anular"}`);
-    toast("Pagamento actualizado.");
+    await acaoPorConfirmar(b);
     await recarregarEu();
+  } catch (erro) { toast(erro.message, true); }
+};
+
+// The Escritório block also needs the table and the caixa line refreshed
+// afterwards ("Não recebi" moves caixa.dinheiro_cent when the pending
+// payment was to the caixa), so it reloads the whole tab, not just eu.
+$("esc-por-confirmar-lista").onclick = async (ev) => {
+  const b = ev.target.closest("button[data-confirmar],button[data-recusar]");
+  if (!b) return;
+  try {
+    await acaoPorConfirmar(b);
+    await recarregarEu();
+    await carregarEscritorio(escritorio.mes);
   } catch (erro) { toast(erro.message, true); }
 };
 
@@ -1195,6 +1220,7 @@ function definirPagaCom(container, valor, custoInput) {
 
 function desenharEscritorio() {
   const e = escritorio;
+  desenharPorConfirmar($("esc-por-confirmar"), $("esc-por-confirmar-titulo"), $("esc-por-confirmar-lista"));
   const sel = $("sel-mes");
   sel.innerHTML = "";
   for (const m of e.meses) {
@@ -1567,6 +1593,10 @@ $("abas").onclick = async (ev) => {
       selecionarHistVista("cafes");
       mostrar("historico");
     } else {
+      // Best-effort: refreshes eu.por_confirmar (spec: pending confirmations
+      // first) before the tab's own snapshot logic runs; offline is not
+      // fatal here, carregarEscritorio() has its own fallback.
+      if (eu) await recarregarEu().catch((erro) => console.error("Falha ao atualizar o saldo para o Escritório:", erro));
       await carregarEscritorio();
       mostrar("escritorio");
       atualizarEstadoNotif().catch((erro) => console.error("Falha ao atualizar estado das notificações:", erro));

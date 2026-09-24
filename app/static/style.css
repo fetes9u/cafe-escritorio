@@ -98,16 +98,17 @@ li { display: flex; justify-content: space-between; padding: 6px 0; border-top: 
 /* "Outro valor" and "A quem" side by side even though each wraps a full-width input/select */
 #form-pagar .linha { flex-wrap: nowrap; }
 #form-pagar .linha label { min-width: 0; }
-#por-confirmar { margin-top: 8px; }
-#por-confirmar-titulo { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
-#por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+/* .por-confirmar: shared by the Café card's own block and the compact block
+   at the top of the Escritório tab (spec: pending confirmations first), so
+   both look the same instead of the styling living on one #id only. */
+.por-confirmar { margin-top: 8px; }
+.por-confirmar-titulo { margin: 0 0 2px; font-weight: 600; color: var(--texto); }
+.por-confirmar-lista li, #dinheiro-lista li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 /* keeper card fit (spec 5.1: cabe em 812 sem scroll com 2 pendentes): tighter
-   row padding and line-height than the base li/ul rules. The buttons keep a
-   >= 32px tap target with padding balanced by an equal negative margin, so
-   the extra hit area never grows the row itself. */
-#por-confirmar-lista { margin-top: 2px; }
-#por-confirmar-lista li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
-#por-confirmar-lista .ligacao { padding: 8px 4px; margin: -8px -4px; }
+   row padding and line-height than the base li/ul rules. The tap target
+   itself is the shared `li > span .ligacao` rule below. */
+.por-confirmar-lista { margin-top: 2px; }
+.por-confirmar-lista li { padding: 3px 0; line-height: 1.2; font-size: .9rem; }
 #dinheiro-lista li { flex-wrap: wrap; }
 /* > (not a descendant selector) so this only ever hits the movement text, never the nested span.nota inside the actions span */
 li.anulada > span:first-child { text-decoration: line-through; color: var(--cinza); }

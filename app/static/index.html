@@ -78,9 +78,9 @@
       <div class="linha"><b id="saldo-frase"></b><span id="caixa-contigo" class="nota" hidden></span></div>
       <p id="saldo-sugestao" class="nota" hidden></p>
       <button type="button" id="btn-pagar">Paguei por MB WAY</button>
-      <div id="por-confirmar" hidden>
-        <p id="por-confirmar-titulo" class="nota"></p>
-        <ul id="por-confirmar-lista"></ul>
+      <div id="por-confirmar" class="por-confirmar" hidden>
+        <p id="por-confirmar-titulo" class="nota por-confirmar-titulo"></p>
+        <ul id="por-confirmar-lista" class="por-confirmar-lista"></ul>
       </div>
     </div>
     <form id="form-pagar" hidden>
@@ -130,14 +130,18 @@
 <!-- ESCRITÓRIO -->
 <section id="vista-escritorio" hidden>
   <p id="esc-fotografia-aviso" class="nota aviso-fotografia" hidden></p>
+  <div id="esc-por-confirmar" class="por-confirmar cartao" hidden>
+    <p id="esc-por-confirmar-titulo" class="nota por-confirmar-titulo"></p>
+    <ul id="esc-por-confirmar-lista" class="por-confirmar-lista"></ul>
+  </div>
   <div class="linha">
     <label>Mês <select id="sel-mes"></select></label>
     <b id="esc-total"></b>
   </div>
-  <p id="esc-caixa" class="nota"></p>
+  <div id="esc-caixa"></div>
 
   <table id="tabela">
-    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">€ do mês</th><th class="num">Saldo</th></tr></thead>
+    <thead><tr><th>Nome</th><th class="num">Cafés</th><th class="num">Este mês</th><th class="num">Saldo total</th></tr></thead>
     <tbody></tbody>
   </table>
 

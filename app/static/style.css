@@ -27,7 +27,7 @@ main { max-width: 520px; margin: 0 auto; padding: 16px; padding-bottom: max(24px
 .grelha button:active { background: var(--linha); }
 
 button { font: inherit; cursor: pointer; }
-button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia):not(.chip) {
+button:not(.ligacao):not(.secundario):not(nav button):not(.grelha button):not(.dia):not(.chip):not(.segment) {
   background: var(--cafe); color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; }
 button:disabled { opacity: .5; }
 .secundario { display: block; width: 100%; margin-top: 16px; padding: 12px; background: transparent; color: var(--cafe); border: 1px dashed var(--cafe-claro); border-radius: 12px; }

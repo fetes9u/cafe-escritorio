@@ -285,16 +285,16 @@ def _exige_responsavel(c) -> dict:
     return responsavel
 
 
-SO_RESPONSAVEL_MARCA_CAIXA = "Só quem guarda a caixa marca uma compra como paga pela caixa."
+ONLY_KEEPER_PAYS_FROM_CAIXA = "Só quem guarda a caixa marca uma compra como paga pela caixa."
 
 
-def _exige_dono_da_caixa(c, u: dict) -> dict:
-    """Como `_exige_responsavel`, mas também recusa (403) quem não é essa
-    pessoa: com MB WAY o dinheiro da caixa fica na conta de quem a guarda,
-    por isso só ela marca uma compra como paga pela caixa."""
+def _require_caixa_keeper(c, u: dict) -> dict:
+    """Like `_exige_responsavel`, but also refuses (403) anyone who is not the
+    keeper: with MB WAY the caixa money sits in the keeper's own account, so
+    only the keeper marks a purchase as paid by the caixa."""
     responsavel = _exige_responsavel(c)
     if responsavel["id"] != u["id"]:
-        raise HTTPException(403, SO_RESPONSAVEL_MARCA_CAIXA)
+        raise HTTPException(403, ONLY_KEEPER_PAYS_FROM_CAIXA)
     return responsavel
 
 
@@ -715,7 +715,7 @@ def registar_compra(body: Compra, background_tasks: BackgroundTasks, u: dict = D
     paga_pela_caixa = body.paga_pela_caixa and body.custo_cent > 0
     with db.conn() as c:
         if paga_pela_caixa:
-            _exige_dono_da_caixa(c, u)
+            _require_caixa_keeper(c, u)
         c.execute(
             "INSERT INTO compras (utilizador_id, capsulas, custo_cent, paga_pela_caixa, em, nota) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -758,7 +758,7 @@ def alterar_compra(compra_id: int, body: AlteracaoCompra, u: dict = Depends(util
         if novo["capsulas"] < compra["capsulas"] and _stock(c) - compra["capsulas"] + novo["capsulas"] < 0:
             raise HTTPException(409, "Não se pode: o stock ficaria negativo.")
         if novo["paga_pela_caixa"] and not compra["paga_pela_caixa"]:
-            _exige_dono_da_caixa(c, u)
+            _require_caixa_keeper(c, u)
         em = logic.agora().isoformat()
         for campo in ("custo_cent", "capsulas", "paga_pela_caixa"):
             antes = bool(compra[campo]) if campo == "paga_pela_caixa" else compra[campo]

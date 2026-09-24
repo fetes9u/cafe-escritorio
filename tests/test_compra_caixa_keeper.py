@@ -5,7 +5,7 @@ isso só essa pessoa marca uma saída dela.
 from tests.conftest import regista
 from tests.test_caixa import _alteracoes, _guarda, _ids
 
-SO_RESPONSAVEL_MARCA_CAIXA = "Só quem guarda a caixa marca uma compra como paga pela caixa."
+ONLY_KEEPER_PAYS_FROM_CAIXA = "Só quem guarda a caixa marca uma compra como paga pela caixa."
 
 
 def _compras(sessao):
@@ -21,7 +21,7 @@ def test_non_keeper_post_compra_paga_pela_caixa_returns_403(cliente):
     r = bea.post("/api/compras", json={"capsulas": 10, "custo_cent": 300, "paga_pela_caixa": True})
 
     assert r.status_code == 403
-    assert r.json() == {"detail": SO_RESPONSAVEL_MARCA_CAIXA}
+    assert r.json() == {"detail": ONLY_KEEPER_PAYS_FROM_CAIXA}
     assert _compras(bea) == []
 
 
@@ -59,7 +59,7 @@ def test_non_keeper_patch_switch_to_caixa_returns_403_and_no_history(cliente):
     r = bea.patch(f"/api/compras/{compra}", json={"paga_pela_caixa": True})
 
     assert r.status_code == 403
-    assert r.json() == {"detail": SO_RESPONSAVEL_MARCA_CAIXA}
+    assert r.json() == {"detail": ONLY_KEEPER_PAYS_FROM_CAIXA}
     assert _alteracoes(bea, "compra", compra) == []
     assert _compras(bea)[0]["paga_pela_caixa"] is False
 

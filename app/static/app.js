@@ -13,8 +13,15 @@ let compraPagaComUtilizador = null; // id do utilizador para quem o "Paga com" d
 
 // ---------- utilidades ----------
 
+// Cents to a pt-PT decimal string ("2500" -> "25,00"), no € sign: shared by
+// euros() and by every place that pre-fills a money input, which must show
+// a comma too (spec 6: iOS Safari's decimal keyboard on a text input does
+// not turn "," into "." on its own).
+function centsParaTexto(cent) {
+  return (cent / 100).toFixed(2).replace(".", ",");
+}
 function euros(cent) {
-  return (cent / 100).toFixed(2).replace(".", ",") + " €";
+  return centsParaTexto(cent) + " €";
 }
 function dataCurta(iso) {
   const d = new Date(iso);
@@ -64,11 +71,22 @@ async function opcoesDestino(cfg) {
   return opcoes;
 }
 
-// Parses a euro-amount input into cents, or null if out of the 0,01..1000 €
-// range the server accepts (spec 4.2/4.3).
+// Parses a euro-amount text input (type=text inputmode=decimal, never
+// type=number: spec 6, iOS Safari's numeric keyboard does not accept a
+// comma there). Accepts a comma or a dot as the decimal separator and at
+// most 2 decimals; anything else (letters, 3+ decimals, empty, a lone
+// separator) is rejected rather than silently rounded. Returns cents, or
+// null when malformed or outside [minCent, maxCent].
+function lerValorCentEntre(valor, minCent, maxCent) {
+  const m = /^\s*(\d+)(?:[.,](\d{1,2}))?\s*$/.exec(valor || "");
+  if (!m) return null;
+  const cent = Number(m[1]) * 100 + Number((m[2] || "").padEnd(2, "0"));
+  return cent >= minCent && cent <= maxCent ? cent : null;
+}
+
+// Payments and reimbursements: 0,01..1000 € (spec 4.2/4.3).
 function lerValorCent(input) {
-  const cent = Math.round(Number(input.value.replace(",", ".")) * 100);
-  return cent >= 1 && cent <= 100000 ? cent : null;
+  return lerValorCentEntre(input.value, 1, 100000);
 }
 
 // Payments, edits and settings always need the network (spec item 6): never
@@ -173,14 +191,14 @@ async function expandirHistorico(ul, entidade, id) {
 function montarFormPagamentoInline(container, opts) {
   const temDestino = !!opts.opcoesDestino;
   container.innerHTML = `<form class="linha">
-    <label>Valor (€) <input type="number" step="0.01" min="0.01" max="1000" class="fp-valor" required></label>
+    <label>Valor (€) <input type="text" inputmode="decimal" autocomplete="off" class="fp-valor" required></label>
     ${temDestino ? '<label>Destino <select class="fp-destino" required></select></label>' : ""}
     <button type="submit">${opts.textoGuardar || "Guardar"}</button>
     <button type="button" class="ligacao fp-cancelar">Cancelar</button>
   </form>`;
   const form = container.querySelector("form");
   const valorInput = form.querySelector(".fp-valor");
-  valorInput.value = (opts.valorInicial / 100).toFixed(2);
+  valorInput.value = centsParaTexto(opts.valorInicial);
   let sel = null;
   if (temDestino) {
     sel = form.querySelector(".fp-destino");
@@ -210,7 +228,7 @@ function montarFormPagamentoInline(container, opts) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     const valorCent = lerValorCent(valorInput);
-    if (valorCent === null) return toast("Mete um valor entre 0,01 € e 1000 €.", true);
+    if (valorCent === null) return toast("Valor inválido: mete um valor entre 0,01 € e 1000 €, ex.: 25,00.", true);
     await opts.onGuardar(valorCent, sel ? sel.value : undefined);
   };
   container.hidden = false;
@@ -764,7 +782,7 @@ function escolherChip(valorCent) {
   for (const b of $("pagar-chips").querySelectorAll("button")) {
     b.classList.toggle("selecionada", Number(b.dataset.valor) === valorCent);
   }
-  $("pagar-livre").value = (valorCent / 100).toFixed(2);
+  $("pagar-livre").value = centsParaTexto(valorCent);
 }
 
 // Fetched fresh every time the form opens (never the login screen's global
@@ -821,7 +839,7 @@ $("pagar-cancelar").onclick = () => {
 $("form-pagar").onsubmit = async (e) => {
   e.preventDefault();
   const valorCent = lerValorCent($("pagar-livre"));
-  if (valorCent === null) return toast("Mete um valor entre 0,01 € e 1000 €.", true);
+  if (valorCent === null) return toast("Valor inválido: mete um valor entre 0,01 € e 1000 €, ex.: 25,00.", true);
   const destino = $("pagar-recebedor").value;
   if (!destino) return toast("Escolhe a quem pagar.", true);
   const paraCaixa = destino === "caixa";
@@ -1232,8 +1250,8 @@ function definirPagaCom(container, valor, custoInput) {
   for (const btn of container.querySelectorAll(".segment")) {
     btn.setAttribute("aria-pressed", String(btn.dataset.payWith === valor));
   }
-  if (valor === "oferta") { custoInput.value = "0.00"; custoInput.disabled = true; }
-  else { custoInput.disabled = false; if (custoInput.value === "0.00") custoInput.value = ""; }
+  if (valor === "oferta") { custoInput.value = "0,00"; custoInput.disabled = true; }
+  else { custoInput.disabled = false; if (custoInput.value === "0,00") custoInput.value = ""; }
 }
 
 function desenharEscritorio() {
@@ -1376,7 +1394,7 @@ async function carregarConfig() {
       sel.appendChild(op);
     }
     sel.value = config.caixa_responsavel_id != null ? String(config.caixa_responsavel_id) : "";
-    $("cfg-preco").value = (config.preco_cent / 100).toFixed(2);
+    $("cfg-preco").value = centsParaTexto(config.preco_cent);
     $("cfg-limiar").value = config.stock_baixo;
   } catch (erro) {
     config = null;
@@ -1521,7 +1539,7 @@ function abrirEdicaoCompra(li, c) {
   const segmentosHTML = pagaComOpcoes.map((o) => `<button type="button" class="segment" data-pay-with="${o.value}" aria-pressed="${o.value === pagaComInicial}">${o.label}</button>`).join("");
   container.innerHTML = `<form class="purchase-form purchase-form-compact">
     <label class="field"><span>Cápsulas</span><input type="number" min="1" max="10000" class="ec-capsulas" required></label>
-    <label class="field"><span>Custo (€)</span><input type="number" step="0.01" min="0" max="10000" class="ec-custo" required></label>
+    <label class="field"><span>Custo (€)</span><input type="text" inputmode="decimal" autocomplete="off" class="ec-custo" required></label>
     <div class="field field-full"><span>Paga com</span><div class="segmented ec-paga-com" role="group" aria-label="Paga com">${segmentosHTML}</div></div>
     <div class="field-full edit-actions">
       <button type="submit">Guardar</button>
@@ -1533,7 +1551,7 @@ function abrirEdicaoCompra(li, c) {
   const custoInput = form.querySelector(".ec-custo");
   const sel = form.querySelector(".ec-paga-com");
   capsulasInput.value = c.capsulas;
-  custoInput.value = (c.custo_cent / 100).toFixed(2);
+  custoInput.value = centsParaTexto(c.custo_cent);
   custoInput.disabled = pagaComInicial === "oferta";
   sel.onclick = (ev) => {
     const btn = ev.target.closest(".segment");
@@ -1545,8 +1563,8 @@ function abrirEdicaoCompra(li, c) {
     e.preventDefault();
     const capsulas = Number(capsulasInput.value);
     const pagaCom = pagaComAtual(sel);
-    const custoCent = pagaCom === "oferta" ? 0 : Math.round(Number(custoInput.value.replace(",", ".")) * 100);
-    if (pagaCom !== "oferta" && !(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
+    const custoCent = pagaCom === "oferta" ? 0 : lerValorCentEntre(custoInput.value, 1, 1000000);
+    if (pagaCom !== "oferta" && custoCent === null) return toast("Valor inválido: mete um custo entre 0,01 € e 10000 €, ex.: 25,00.", true);
     const corpo = {};
     if (capsulas !== c.capsulas) corpo.capsulas = capsulas;
     if (custoCent !== c.custo_cent) corpo.custo_cent = custoCent;
@@ -1571,8 +1589,8 @@ $("compra-paga-com").onclick = (ev) => {
 $("form-compra").onsubmit = async (e) => {
   e.preventDefault();
   const pagaCom = pagaComAtual($("compra-paga-com"));
-  const custoCent = pagaCom === "oferta" ? 0 : Math.round(Number($("compra-custo").value.replace(",", ".")) * 100);
-  if (pagaCom !== "oferta" && !(custoCent >= 1 && custoCent <= 1000000)) return toast("Mete um custo entre 0,01 € e 10000 €.", true);
+  const custoCent = pagaCom === "oferta" ? 0 : lerValorCentEntre($("compra-custo").value, 1, 1000000);
+  if (pagaCom !== "oferta" && custoCent === null) return toast("Valor inválido: mete um custo entre 0,01 € e 10000 €, ex.: 25,00.", true);
   try {
     await api("POST", "/compras", {
       capsulas: Number($("compra-n").value),
@@ -1590,8 +1608,8 @@ $("form-compra").onsubmit = async (e) => {
 
 $("form-config").onsubmit = async (e) => {
   e.preventDefault();
-  const precoCent = Math.round(Number($("cfg-preco").value.replace(",", ".")) * 100);
-  if (!(precoCent >= 1 && precoCent <= 10000)) return toast("Mete um preço entre 0,01 € e 100 €.", true);
+  const precoCent = lerValorCentEntre($("cfg-preco").value, 1, 10000);
+  if (precoCent === null) return toast("Valor inválido: mete um preço entre 0,01 € e 100 €, ex.: 25,00.", true);
   const respId = $("cfg-caixa-responsavel").value;
   try {
     await api("PUT", "/config", {

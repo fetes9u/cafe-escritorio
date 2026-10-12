@@ -4,9 +4,9 @@
 
 When reporting information to me, be extremely concise and sacrifice grammar for sake of concision.
 
-## Modelos e esforço para programação (Claude 5.5)
+## Modelos e esforço para programação
 
-Só usar `claude-haiku-5-5`, `claude-sonnet-5-5` e `claude-opus-5-5`. Não usar `claude-fable-5-1`.
+Usar sempre a versão mais recente de opus, sonnet e haiku (aliases `opus`, `sonnet`, `haiku` no parâmetro `model`). Não usar fable.
 
 | Tarefa | Modelo | Esforço inicial |
 |---|---|---|
@@ -16,5 +16,5 @@ Só usar `claude-haiku-5-5`, `claude-sonnet-5-5` e `claude-opus-5-5`. Não usar 
 | Revisão de código | modelo igual ou superior ao autor | medium |
 
 - `xhigh` e `max` só com ganho medido em evals. `max` sobre-pensa.
-- Haiku 5.5 só como subagente, não como principal de agentic coding complexo.
+- Haiku só como subagente, não como principal de agentic coding complexo.
 - Escalada: falha verificável → esforço +1 no mesmo modelo → modelo acima com high.
